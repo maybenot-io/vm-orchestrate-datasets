@@ -6,7 +6,8 @@ The below described VM and scripts are used to collect web traffic over Mullvad 
 
 This VM is based on Ubuntu 24.04.1 (Noble Numbat); the following configurations and alterations have been made to the ISO:
 
-- The grub.cfg file has its boot records edited to only have one entry, marked as autoinstall (to skip the graphical setup) with a basic user-data file including an used named `ubuntu` with the password `password`. The user-data and meta-data files are placed in /autoinstaller/ and can be found in this directory. This is the menuentry used in grub.cfg:
+- The grub.cfg file has its boot records edited to only have one entry, marked as autoinstall (to skip the graphical setup) with a basic user-data file including a user named `ubuntu` with the password `password`.
+- The user-data and meta-data files are placed in /autoinstaller/ and can be found in this directory. This is the menuentry used in grub.cfg:
 ```bash
 menuentry "Ubuntu Autoinstaller" {
     set gfxpayload=keep
