@@ -78,7 +78,7 @@ def start_browser(custom_path) -> WebDriver | None:
         print("exception on start_browser:", error)
         return None
 
-def get_metadata(driver, num_visit) -> dict:
+def get_metadata(driver) -> dict:
     metadata = driver.execute_script("""
         window.performanceMetrics = {};
         const observer = new PerformanceObserver((list) => {
@@ -97,17 +97,16 @@ def get_metadata(driver, num_visit) -> dict:
 
         return window.performanceMetrics || {};
     """)
-    metadata['num_visit'] = num_visit
     return metadata
 
-def visit_site(driver, url, timeout, num_visit) -> tuple[bytes | None, dict | None]:
+def visit_site(driver, url, timeout) -> tuple[bytes | None, dict | None]:
     screenshot_as_binary = None
     metadata = None
     try:
         driver.command_executor.set_timeout(timeout)
         driver.get(url)
         wait_for_page_load(driver, timeout)
-        metadata = get_metadata(driver, num_visit)
+        metadata = get_metadata(driver)
     except Exception as error:
         print("exception on visit:", error)
         driver.quit()
@@ -413,8 +412,6 @@ def main(args) -> None:
                 print(f"No work available for current server, sleeping for {r} seconds then continuing with new server")
                 time.sleep(r)
             else:
-                # reset work attempts and restart VPN if it's not running
-                work_attempts = 0
                 if not is_mullvadvpn_service_running():
                     toggle_mullvadvpn_service("on")
                     toggle_mullvadvpn_tunnel("on")
@@ -432,7 +429,7 @@ def main(args) -> None:
                 time_start = datetime.now().isoformat(sep=' ', timespec='milliseconds')
                 start_pcap_capture()
                 try:
-                    png, metadata = visit_site(driver, work["url"], args.timeout, current_visit_count + 1)
+                    png, metadata = visit_site(driver, work["url"], args.timeout)
                 except:
                     print("Failed to visit site (no png and/or no metadata), skipping work")
                     end_pcap_capture()
@@ -441,6 +438,7 @@ def main(args) -> None:
                 time_end = datetime.now().isoformat(sep=' ', timespec='milliseconds')
                 metadata['time_start'] = time_start
                 metadata['time_end'] = time_end
+                metadata['num_visit'] = current_visit_count + 1
                 print(f"Captured {len(png)/1024:.1f} KiB of png data.")
                 print(f"Captured {len(pcap_bytes)/1024:.1f} KiB of pcap data.")
                 while not post_work_to_server(server, work["url"], current_server, png, pcap_bytes, metadata):
