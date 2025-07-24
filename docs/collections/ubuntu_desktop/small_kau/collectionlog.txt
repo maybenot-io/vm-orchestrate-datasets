@@ -1,0 +1,82 @@
+Wed Jul 23 05:23:19 PM UTC 2025 - Progress: 0/1500
+Wed Jul 23 05:28:19 PM UTC 2025 - Progress: 25/1500
+Wed Jul 23 05:33:19 PM UTC 2025 - Progress: 59/1500
+Wed Jul 23 05:38:19 PM UTC 2025 - Progress: 94/1500
+Wed Jul 23 05:43:19 PM UTC 2025 - Progress: 130/1500
+Wed Jul 23 05:48:19 PM UTC 2025 - Progress: 158/1500
+Wed Jul 23 05:53:19 PM UTC 2025 - Progress: 192/1500
+Wed Jul 23 05:58:19 PM UTC 2025 - Progress: 226/1500
+Wed Jul 23 06:03:19 PM UTC 2025 - Progress: 263/1500
+Wed Jul 23 06:08:19 PM UTC 2025 - Progress: 297/1500
+Wed Jul 23 06:13:19 PM UTC 2025 - Progress: 334/1500
+Wed Jul 23 06:18:19 PM UTC 2025 - Progress: 370/1500
+Wed Jul 23 06:23:19 PM UTC 2025 - Progress: 406/1500
+Wed Jul 23 06:28:19 PM UTC 2025 - Progress: 435/1500
+Wed Jul 23 06:33:19 PM UTC 2025 - Progress: 469/1500
+Wed Jul 23 06:38:19 PM UTC 2025 - Progress: 505/1500
+Wed Jul 23 06:43:19 PM UTC 2025 - Progress: 541/1500
+Wed Jul 23 06:48:19 PM UTC 2025 - Progress: 570/1500
+Wed Jul 23 06:53:19 PM UTC 2025 - Progress: 604/1500
+Wed Jul 23 06:58:19 PM UTC 2025 - Progress: 639/1500
+Wed Jul 23 07:03:19 PM UTC 2025 - Progress: 671/1500
+Wed Jul 23 07:08:19 PM UTC 2025 - Progress: 708/1500
+Wed Jul 23 07:13:19 PM UTC 2025 - Progress: 744/1500
+Wed Jul 23 07:18:19 PM UTC 2025 - Progress: 780/1500
+Wed Jul 23 07:23:19 PM UTC 2025 - Progress: 815/1500
+Wed Jul 23 07:28:20 PM UTC 2025 - Progress: 849/1500
+Wed Jul 23 07:33:20 PM UTC 2025 - Progress: 880/1500
+Wed Jul 23 07:38:20 PM UTC 2025 - Progress: 908/1500
+Wed Jul 23 07:43:20 PM UTC 2025 - Progress: 943/1500
+Wed Jul 23 07:48:20 PM UTC 2025 - Progress: 976/1500
+Wed Jul 23 07:53:20 PM UTC 2025 - Progress: 1009/1500
+Wed Jul 23 07:58:20 PM UTC 2025 - Progress: 1044/1500
+Wed Jul 23 08:03:20 PM UTC 2025 - Progress: 1079/1500
+Wed Jul 23 08:08:20 PM UTC 2025 - Progress: 1112/1500
+Wed Jul 23 08:13:20 PM UTC 2025 - Progress: 1145/1500
+Wed Jul 23 08:18:20 PM UTC 2025 - Progress: 1178/1500
+Wed Jul 23 08:23:20 PM UTC 2025 - Progress: 1209/1500
+Wed Jul 23 08:28:20 PM UTC 2025 - Progress: 1234/1500
+Wed Jul 23 08:33:20 PM UTC 2025 - Progress: 1264/1500
+Wed Jul 23 08:38:20 PM UTC 2025 - Progress: 1295/1500
+Wed Jul 23 08:43:20 PM UTC 2025 - Progress: 1327/1500
+Wed Jul 23 08:48:20 PM UTC 2025 - Progress: 1356/1500
+Wed Jul 23 08:53:20 PM UTC 2025 - Progress: 1389/1500
+Wed Jul 23 08:58:20 PM UTC 2025 - Progress: 1421/1500
+Wed Jul 23 09:03:20 PM UTC 2025 - Progress: 1457/1500
+Wed Jul 23 09:08:20 PM UTC 2025 - Progress: 1495/1500
+Wed Jul 23 09:13:20 PM UTC 2025 - Progress: 1500/1500
+-> Running data validation...
+-> Server restarted
+-> Verifying collection status...
+Wed Jul 23 09:13:33 PM UTC 2025 - After restart: 1500/1500
+-> Collection verified complete!
+Wed Jul 23 10:27:18 PM UTC 2025 - Progress: 1452/1500
+Wed Jul 23 10:32:18 PM UTC 2025 - Progress: 1485/1500
+Wed Jul 23 10:37:18 PM UTC 2025 - Progress: 1500/1500
+-> Running data validation...
+!! Check script found bad files! Running again with --prune...
+-> Server restarted
+-> Verifying collection status...
+Wed Jul 23 10:37:28 PM UTC 2025 - After restart: 1464/1500
+-> More data needed after check
+Wed Jul 23 10:42:28 PM UTC 2025 - Progress: 1488/1500
+Wed Jul 23 10:47:28 PM UTC 2025 - Progress: 1500/1500
+-> Running data validation...
+!! Check script found bad files! Running again with --prune...
+-> Server restarted
+-> Verifying collection status...
+Wed Jul 23 10:47:38 PM UTC 2025 - After restart: 1480/1500
+-> More data needed after check
+Wed Jul 23 11:23:19 PM UTC 2025 - Progress: 1500/1500
+-> Running data validation...
+!! Check script found bad files! Running again with --prune...
+-> Server restarted
+-> Verifying collection status...
+Wed Jul 23 11:23:30 PM UTC 2025 - After restart: 1497/1500
+-> More data needed after check
+Wed Jul 23 11:28:30 PM UTC 2025 - Progress: 1500/1500
+-> Running data validation...
+-> Server restarted
+-> Verifying collection status...
+Wed Jul 23 11:28:40 PM UTC 2025 - After restart: 1500/1500
+-> Collection verified complete!
