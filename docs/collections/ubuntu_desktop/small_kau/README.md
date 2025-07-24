@@ -5,10 +5,13 @@ The collection was of 5 samples per website per server for a total of 1500 sampl
 
 All logfiles and environmental files (urllist, vpnlist) can be found in this directory.
 
+In general, the client VM received a VPN-server to use from the host/server, then performed 10 visits to a randomized URL using that VPN-server before asking for a new, different VPN-server to use.
+This continues until there are no more URL:s left to visit for each server.
+
 ## Versions of Client/Server scripts used
 
 This collection was performed using the client- and server scripts as found at the following commit ID:
-be1e60493d5d9e41790abc7b069987d05ad9660f
+[be1e60493d5d9e41790abc7b069987d05ad9660f](https://github.com/maybenot-io/vm-orchestrate-datasets/commit/be1e60493d5d9e41790abc7b069987d05ad9660f)
 
 ## URL-list
 
