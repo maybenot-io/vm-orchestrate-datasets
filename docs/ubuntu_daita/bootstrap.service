@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Bootstrap Script
+
+[Service]
+ExecStart=/usr/local/bin/first_boot.sh
+User=root
+Type=oneshot
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
