@@ -28,6 +28,7 @@ if ! sudo virsh dominfo "$BASE_VM_NAME" &>/dev/null; then
         --cdrom "$OS_IMAGE" \
         --network network="$VM_NETWORK",model=virtio \
         --os-variant ubuntu24.04 \
+        --video qxl,ram=65536,vram=65536 \
         --graphics vnc,listen=0.0.0.0 \
         --console pty,target_type=serial \
         --noautoconsole > /dev/null 2>&1
