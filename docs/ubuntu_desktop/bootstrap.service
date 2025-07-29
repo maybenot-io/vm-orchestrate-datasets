@@ -5,7 +5,7 @@ Description=Run Bootstrap Script
 ExecStart=/usr/local/bin/first_boot.sh
 User=root
 Type=oneshot
-RemainAfterExit=true
+RemainAfterExit=no
 
 [Install]
 WantedBy=multi-user.target

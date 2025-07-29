@@ -52,11 +52,18 @@ fi
 log "Successfully installed GeckoDriver"
 
 log "Installing tShark.."
-if ! apt install tshark -y; then
+echo "wireshark-common wireshark-common/install-setuid boolean true" | sudo debconf-set-selections
+if ! DEBIAN_FRONTEND=noninteractive sudo apt install -y tshark; then
     log "Error installing tShark"
     exit 1
 fi
 log "Successfully installed tShark"
+
+log "Adding ubuntu user to wireshark group to allow non-root packet capture.."
+if ! sudo usermod -aG wireshark ubuntu; then
+    log "Error adding user to wireshark group"
+    exit 1
+fi
 
 log "Installing Mullvad VPN and Mullvad Browser.."
 if ! curl -fsSLo /usr/share/keyrings/mullvad-keyring.asc https://repository.mullvad.net/deb/mullvad-keyring.asc; then
