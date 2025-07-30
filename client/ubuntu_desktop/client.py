@@ -427,6 +427,7 @@ class DataCollectionClient:
         # Visit website
         try:
             start_time = datetime.now().isoformat(sep=' ', timespec='milliseconds')
+
             screenshot, metrics = self._visit_website(task['url'])
             pcap_data = self._end_pcap_capture()
 
@@ -435,6 +436,10 @@ class DataCollectionClient:
             print(f"Task execution error: {e}")
             return
 
+        # If metrics, screenshot or pcap failed to populate, skip this task
+        if not screenshot or not pcap_data or not metrics:
+            print(f"Failed to capture metrics, screenshot or pcap for {task['url']}")
+            return False
         # Fetch metrics
         if metrics:
             metrics.update({
