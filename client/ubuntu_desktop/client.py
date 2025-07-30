@@ -1,464 +1,472 @@
 #!/usr/bin/env python3
-import argparse
-import random
-from typing import Any
-from selenium.webdriver import Firefox
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
-import time
-import subprocess
-import platform
-import os
-import tempfile
-import requests
-from urllib.parse import urljoin
-import json
-from datetime import datetime, timedelta, timezone
-from PIL import Image
 import io
-import psutil
-import socket
-import hashlib
+import os
+import json
+import time
+import random
+import requests
+import tempfile
+import subprocess
+from PIL import Image
+from functools import wraps
+from urllib.parse import urljoin
+from pyvirtualdisplay import Display
+from selenium.webdriver import Firefox
+from datetime import datetime, timedelta, timezone
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support.wait import WebDriverWait
 
-DEVICE_CONFIG_FILE = r"/etc/mullvad-vpn/device.json"
+class DataCollectionClient:
+    DEVICE_CONFIG_FILE = "/etc/mullvad-vpn/device.json"
 
-# global variables to store the process object of the capture
-capture_process = None
-tmp_pcap_file = os.path.join(tempfile.gettempdir(), f"{os.urandom(4).hex()}.pcap")
-
-# global variables to store identity and states
-whoami = None
-current_server = None
-visit_count = 10
-
-# global session for all requests through a proxy
-session = requests.Session()
-
-def start_pcap_capture(windows_interface="Ethernet0") -> None:
-    global capture_process, tmp_pcap_file
-    tmp_pcap_file = os.path.join(tempfile.gettempdir(), f"{os.urandom(4).hex()}.pcap")
-    cmd = []
-    # using tshark to capture network traffic, only UDP packets and only the
-    # first 64 bytes of each packet
-    if platform.system() == "Windows":
-        cmd = ["tshark", "-i", windows_interface, "-f" ,"port 51820" ,"-s", "64", "-w", tmp_pcap_file]
-    else: # Linux and potentially macOS
-        cmd = ["sudo", "tshark", "-i", "any", "-f" ,"port 51820" ,"-s", "64", "-w", tmp_pcap_file]
-    capture_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return
-
-def end_pcap_capture() -> bytes:
-    global capture_process, tmp_pcap_file
-    capture_process.terminate()
-    capture_process.wait()
-
-    cmd = ["sudo", "cat", tmp_pcap_file]
-    cat_pcap = subprocess.run(cmd, capture_output=True)
-    pcap_data = cat_pcap.stdout
-
-    cmd = ["sudo", "rm", tmp_pcap_file]
-    subprocess.run(cmd)
-    return pcap_data
-
-def wait_for_page_load(driver, timeout) -> None:
-    WebDriverWait(driver, timeout).until(
-        lambda d: d.execute_script('return document.readyState') == 'complete'
-    )
-
-def start_browser(custom_path) -> WebDriver | None:
-    try:
-        options = Options()
-        options.binary_location = custom_path
-        firefox_service = Service(executable_path="/usr/local/bin/geckodriver",)
-        driver = Firefox(options=options, service=firefox_service)
-        return driver
-    except Exception as error:
-        print("exception on start_browser:", error)
-        return None
-
-def get_metadata(driver) -> dict:
-    metadata = driver.execute_script("""
-        window.performanceMetrics = {};
-        const observer = new PerformanceObserver((list) => {
-            window.performanceMetrics = window.performanceMetrics || {};
-            list.getEntries().forEach(entry => {
-                const type = entry.entryType;
-                window.performanceMetrics[type] = window.performanceMetrics[type] || [];
-                window.performanceMetrics[type].push(entry.toJSON());
-            });
-        });
-
-        observer.observe({ type: 'navigation', buffered: true });
-        observer.observe({ type: 'resource', buffered: true });
-        observer.observe({ type: 'paint', buffered: true });
-        observer.observe({ type: 'largest-contentful-paint', buffered: true });
-
-        return window.performanceMetrics || {};
-    """)
-    return metadata
-
-def visit_site(driver, url, timeout) -> tuple[bytes | None, dict | None]:
-    screenshot_as_binary = None
-    metadata = None
-    try:
-        driver.command_executor.set_timeout(timeout)
-        driver.get(url)
-        wait_for_page_load(driver, timeout)
-        metadata = get_metadata(driver)
-    except Exception as error:
-        print("exception on visit:", error)
-        driver.quit()
-        close_executable("mullvad-browser")
-        return None
-
-    try:
-        screenshot_as_binary = driver.get_screenshot_as_png()
-        # Load the screenshot into Pillow Image
-        image = Image.open(io.BytesIO(screenshot_as_binary))
-
-        # Resize the image to 50% of its original size
-        new_size = (int(image.width / 2), int(image.height / 2))
-        resized_image = image.resize(new_size, Image.LANCZOS)
-
-        # Save the resized image to a BytesIO object in PNG format with 90% quality
-        image_bytes_io = io.BytesIO()
-        resized_image.save(image_bytes_io, format="PNG", quality=90)
-        screenshot_as_binary = image_bytes_io.getvalue()
-    except Exception as error:
-        print("exception on screenshot:", error)
-    finally:
-        driver.quit()
-        close_executable("mullvad-browser")
-
-    return screenshot_as_binary, metadata
-
-def close_executable(executable_name) -> bool:
-    try:
-        subprocess.run(
-            ["sudo", "pkill", "-f", executable_name],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except:
-        return False
-
-def is_mullvadvpn_service_running() -> bool:
-    try:
-        result = subprocess.run(["sudo", "systemctl", "is-active", "mullvad-daemon"],
-            capture_output=True, text=True, check=True)
-        return result.returncode == 0
-    except Exception as e:
-        print("is_mullvadvpn_service_running error", e)
-        return False
-
-def toggle_mullvadvpn_service(action) -> bool:
-    try:
-        print("Toggling mullvadvpn service:", action)
-        if action == "on":
-            action = "start"
-        else:
-            action = "stop"
-        subprocess.run(["sudo", "systemctl", action, "mullvad-daemon"], check=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
-        return True
-    except Exception as e:
-        print("toggle_mullvadvpn_service error", e)
-        return False
-
-def toggle_mullvadvpn_tunnel(action) -> bool:
-    try:
-        print("Toggling mullvadvpn tunnel:", action)
-        if action == "on":
-            action = "connect"
-        else:
-            action = "disconnect"
-
-        subprocess.run(["mullvad", action], capture_output=True, text=True, check=True)
-        time.sleep(2)
-        return True
-    except Exception as e:
-        print("toggle_mullvadvpn_tunnel error", e)
-        return False
-
-def is_mullvadvpn_tunnel_running() -> bool:
-    try:
-        result = subprocess.run(["mullvad", "status"], capture_output=True, text=True, check=True)
-        return "Connected" in result.stdout
-    except Exception as e:
-        print("is_mullvadvpn_tunnel_running error", e)
-        return False
-
-def configure_mullvad() -> bool:
-    try:
-        # enable LAN access
-        command = ["mullvad", "lan", "set", "allow"]
-        subprocess.run(command, capture_output=True, text=True, check=True)
-
-        # use default wireguard port 51820
-        command = ["mullvad", "relay", "set", "tunnel", "wireguard", "-p", "51820"]
-        subprocess.run(command, capture_output=True, text=True, check=True)
-
-        # default start with daita off
-        command = ["mullvad", "tunnel", "set", "wireguard", "--daita", "off"]
-        subprocess.run(command, capture_output=True, text=True, check=True)
-
-        return True
-    except Exception as e:
-        print("configure_mullvad error", e)
-        return False
-
-def configure_mullvad_for_visit(server) -> bool:
-    global current_server, visit_count, session, whoami
-    try:
-        # request new VPN server to use, given by a GET to the /server endpoint
-        params = {}
-        params['id'] = whoami
-        params['server'] = current_server if current_server else 'None'
-        response = session.get(urljoin(server, "server"), params=params)
-        response.raise_for_status()
-        new_server = response.json()
-        print('Swapping to new VPN-server:', new_server)
-        command = ["mullvad", "relay", "set", "location", new_server]
-        subprocess.run(command, capture_output=True, text=True, check=True)
-        current_server = new_server
-        return is_mullvadvpn_tunnel_running()
-    except requests.RequestException:
-        # A status exception here means there are no more VPN servers with visits left to perform
-        # so we pause for 5 minutes to wait for check.py to run
-        time.sleep(300)
-        return False
-    except Exception as e:
-        print("configure_mullvad_for_visit error", e)
-        return False
-
-def get_device_json(account) -> dict[str, dict[str, Any]]:
-    # we set the timestamp 1 year in the future, this is to prevent the client
-    # from refreshing our keys
-    timestamp = datetime.now(timezone.utc) + timedelta(days=365)
-    timestamp = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    return {
-        "logged_in": {
-            "account_token": account["account_token"],
-            "device": {
-                "id": account["device_id"],
-                "name": account["device_name"],
-                "wg_data": {
-                    "private_key": account["device_private_key"],
-                    "addresses": {
-                        "ipv4_address": account["device_ipv4_address"],
-                        "ipv6_address": account["device_ipv6_address"]
-                    },
-                    "created": timestamp
-                },
-                "hijack_dns": False,
-                "created": timestamp
-            }
+    def __init__(self):
+        # Default config and state values
+        # some can/will be overriden by server-supplied values
+        self.config = {
+            'firefox_path': "/usr/lib/mullvad-browser/mullvadbrowser.real",
+            'server_url': "http://192.168.100.1:5000",
+            # These will be populated by server response
+            'grace': None,
+            'min_wait': None,
+            'max_wait': None,
+            'visit_count': None,
+            'display_size': None,
+            'fullscreen': True
         }
-    }
+        self.state = {
+            'current_server': None,
+            'capture_process': None,
+            'current_visit_count': 0,
+            'session': requests.Session(),
+            'identifier': self._generate_identifier()
+        }
+        print(f"Client ID: {self.state['identifier']}")
 
-def setup(server) -> bool:
-    global session, visit_count
-    try:
-        response = session.get(urljoin(server, "setup"), params={'id': whoami})
+    @staticmethod
+    def _generate_identifier():
+        """Generate client identifier"""
+        import uuid
+        return str(uuid.uuid4())[:16]
 
-        if response.status_code != 200:
-            print("Received unexpected status code from server:", response.status_code)
+    # VPN Management Methods
+    def _run_mullvad_command(self, *args):
+        """Run a mullvad CLI command"""
+        try:
+            result = subprocess.run(["mullvad"] + list(args),
+                                   capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            print(f"Mullvad command error: {e}")
+            return None
+
+    def _set_tunnel_state(self, state):
+        """Control VPN tunnel connection"""
+        result = self._run_mullvad_command(state)
+        time.sleep(2)
+        return result is not None
+
+    def is_tunnel_active(self):
+        """Check if VPN tunnel is active"""
+        status = self._run_mullvad_command("status")
+        return status and "Connected" in status
+
+    def _configure_vpn(self, account=None):
+        """Configure VPN with account setup"""
+        try:
+            # Basic configuration
+            self._run_mullvad_command("lan", "set", "allow")
+            self._run_mullvad_command("relay", "set", "tunnel", "wireguard", "-p", "51820")
+            self._run_mullvad_command("tunnel", "set", "wireguard", "--daita", "off")
+
+            # Account configuration
+            if account:
+                self._setup_account(account)
+            else:
+                print(f"No account received from server")
+                return False
+            return True
+        except Exception as e:
+            print(f"VPN configuration error: {e}")
             return False
 
-        # we assume the output from the server is correct, and looks something like:
-        # {
-        #   "account": {
-        #     "account_token": "9321816363818742",
-        #     "device_id": "a3eedd02-09c1-4f5b-9090-9f3d27ea66bb",
-        #     "device_ipv4_address": "10.64.10.49/32",
-        #     "device_ipv6_address": "fc00:bbbb:bbbb:bb01::a40:a31/128",
-        #     "device_name": "gifted krill",
-        #     "device_private_key": "MCWA6YO5PBE/MEsyRqs6Teej1GKqhGJFnH3xCCvjC2c="
-        #   }
-        # }
-        data = response.json()
-        account = data["account"]
+    def _setup_account(self, account):
+        """Set up VPN account credentials"""
+        # Stop mullvad daemon to inject json
+        self._set_tunnel_state("disconnect")
 
-        # If we're given a specific amount of visits to perform using each VPN connection, it is set here.
-        # If not given, a default visit_count of 10 is used.
-        if data["visit_count"]:
-            visit_count = data["visit_count"]
+        timestamp = (datetime.now(timezone.utc) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        device_config = {
+            "logged_in": {
+                "account_token": account["account_token"],
+                "device": {
+                    "id": account["device_id"],
+                    "name": account["device_name"],
+                    "wg_data": {
+                        "private_key": account["device_private_key"],
+                        "addresses": {
+                            "ipv4_address": account["device_ipv4_address"],
+                            "ipv6_address": account["device_ipv6_address"]
+                        },
+                        "created": timestamp
+                    },
+                    "hijack_dns": False,
+                    "created": timestamp
+                }
+            }
+        }
 
-        # stop the mullvadvpn service and disconnect the tunnel
-        if is_mullvadvpn_service_running():
-            toggle_mullvadvpn_tunnel("off")
-            toggle_mullvadvpn_service("off")
-
-        # overwrite the device config with data submitted by the server
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_f:
-            json.dump(get_device_json(account), tmp_f, indent=4)
+            json.dump(device_config, tmp_f, indent=4)
             tmp_path = tmp_f.name
-        subprocess.run(["sudo", "mv", tmp_path, DEVICE_CONFIG_FILE], check=True)
+        subprocess.run(["sudo", "mv", tmp_path, self.DEVICE_CONFIG_FILE], check=True)
+        time.sleep(1) # Make sure file has been written
+        # start daemon to use new account configuration
+        self._set_tunnel_state("connect")
+        time.sleep(2)
 
-        # reload systemctl since we changed files service files
-        # and give it a second to successfully reload
-        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
-        time.sleep(1)
+    # Network Capture Methods
+    def _start_pcap_capture(self):
+        """Start network traffic capture"""
+        self.state['tmp_pcap_file'] = os.path.join(tempfile.gettempdir(), f"{os.urandom(4).hex()}.pcap")
+        cmd = [
+            "tshark",
+            "-i", "any",
+            "-f", "port 51820",
+            "-s", "64",
+            "-w", self.state['tmp_pcap_file']
+        ]
 
-        # enable the mullvadvpn daemon again, this has to be done prior to the
-        # configuration of the mullvad daemon
-        toggle_mullvadvpn_service("on")
+        try:
+            self.state['capture_process'] = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            time.sleep(0.5)  # Let tshark initialize
+        except FileNotFoundError:
+            raise RuntimeError("tshark not found - install wireshark")
 
-        # make some configuration
-        configure_mullvad()
+    def _end_pcap_capture(self) -> bytes:
+        proc = self.state.get('capture_process')
+        if not proc:
+            return b''
 
-        # and finally, enable the tunnel
-        toggle_mullvadvpn_tunnel("on")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
-        if not is_mullvadvpn_tunnel_running():
-            raise Exception("unable to establish a mullvad vpn tunnel connection")
+        tmp_file = self.state.get('tmp_pcap_file')
+        try:
+            with open(tmp_file, 'rb') as f:
+                data = f.read()
+            os.unlink(tmp_file)
+            return data
+        except (FileNotFoundError, TypeError):
+            return b''
 
-        return True
-    except Exception as e:
-        print("setup failed, error", e)
-        return False
+    # Browser Methods
+    def _start_browser(self):
+        """Launch Mullvad browser instance"""
+        try:
+            options = Options()
+            options.binary_location = self.config['firefox_path']
+            service = Service(executable_path="/usr/local/bin/geckodriver")
+            return Firefox(options=options, service=service)
+        except Exception as e:
+            print(f"Browser start error: {e}")
+            return None
 
-def get_work(server) -> dict | None:
-    global session, current_server
-    try:
-        work_url = urljoin(server, "work")
-        response = session.get(work_url, params={'id': whoami, 'server': current_server})
+    @staticmethod
+    def _get_performance_metrics(driver):
+        """Collect browser performance metrics"""
+        return driver.execute_script("""
+            const observer = new PerformanceObserver((list) => {
+                window.performanceMetrics = window.performanceMetrics || {};
+                list.getEntries().forEach(entry => {
+                    const type = entry.entryType;
+                    window.performanceMetrics[type] = window.performanceMetrics[type] || [];
+                    window.performanceMetrics[type].push(entry.toJSON());
+                });
+            });
+
+            observer.observe({ type: 'navigation', buffered: true });
+            observer.observe({ type: 'resource', buffered: true });
+            observer.observe({ type: 'paint', buffered: true });
+            observer.observe({ type: 'largest-contentful-paint', buffered: true });
+
+            return window.performanceMetrics || {};
+        """)
+
+    def _wait_for_page_load(self, driver):
+        """
+        Wait until document.readyState == 'complete', then stay blocked
+        long enough to satisfy min_wait, grace, and max_wait constraints
+        from self.config.
+        """
+        min_wait = self.config.get('min_wait', 0)
+        max_wait = self.config.get('max_wait', 30)
+        grace = self.config.get('grace', 0)
+
+        if min_wait < 0 or max_wait < 0 or grace < 0:
+            raise ValueError("min_wait, max_wait and grace must be non-negative.")
+        if min_wait > max_wait:
+            raise ValueError("min_wait must not exceed max_wait.")
+
+        start = time.monotonic()
+
+        try:
+            WebDriverWait(driver, max_wait).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            # Hard timeout reached, just return
+            return
+
+        t_ready = time.monotonic() - start
+
+        target_total = max(min_wait, t_ready + grace)
+        target_total = min(target_total, max_wait)
+
+        sleep_needed = target_total - t_ready
+        if sleep_needed > 0:
+            time.sleep(sleep_needed)
+
+    def _visit_website(self, url):
+        display_size = self.config.get('display_size', (1920, 1080))
+        display = Display(visible=0, size=display_size)
+        display.start()
+        """Visit URL and return screenshot + metrics"""
+        driver = self._start_browser()
+        if not driver:
+            display.stop()
+            return None, None
+        try:
+            driver.set_window_size(*display_size)
+            driver.maximize_window()
+            driver.get(url)
+            # Use the config values automatically in wait
+            self._wait_for_page_load(driver)
+
+            metrics = self._get_performance_metrics(driver)
+            screenshot = self._capture_screenshot(driver)
+            return screenshot, metrics
+        except Exception as e:
+            print(f"Website visit error: {e}")
+            return None, None
+        finally:
+            driver.quit()
+            self._close_browser_processes()
+            display.stop()
+
+    def _capture_screenshot(self, driver):
+        """Capture screenshot"""
+        try:
+            img = Image.open(io.BytesIO(driver.get_screenshot_as_png()))
+
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG", quality=90)
+            return buffer.getvalue()
+        except Exception as e:
+            print(f"Screenshot error: {e}")
+            return None
+
+    def _close_browser_processes(self):
+        """Terminate browser processes"""
+        try:
+            subprocess.run(
+                ["pkill", "-f", "mullvad-browser"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            return True
+        except Exception:
+            return False
+
+    # Server Communication Methods
+    def retry_with_backoff(
+        attempts: int = 5,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        jitter: float = 0.3,
+        exceptions: tuple = (Exception,)
+    ):
+        """
+        Retry a function with exponential backoff and jitter.
+
+        Parameters:
+            attempts   - max retry attempts
+            base_delay - starting delay in seconds
+            max_delay  - cap for delay between retries
+            jitter     - random jitter factor (0.3 means ±30%)
+            exceptions - exception types to catch and retry
+        """
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                delay = base_delay
+                for attempt in range(1, attempts + 1):
+                    try:
+                        return func(*args, **kwargs)
+                    except exceptions as e:
+                        if attempt == attempts:
+                            raise
+                        jittered = delay * random.uniform(1 - jitter, 1 + jitter)
+                        sleep_time = min(jittered, max_delay)
+                        time.sleep(sleep_time)
+                        delay *= 2  # exponential backoff
+            return wrapper
+        return decorator
+
+    def _server_request(self, endpoint, method="GET", data=None, params=None):
+        """Handle server communication"""
+        url = urljoin(self.config['server_url'], endpoint)
+        if method == "GET":
+            response = self.state['session'].get(url, params=params)
+        else:
+            response = self.state['session'].post(url, data=data)
         response.raise_for_status()
-        return response.json()
-    except requests.RequestException:
-        # If we get an exception here it'll more than likely be that there is no more work for this VPN server
-        return None
+        return response.json() if response.content else {}
 
-def post_work_to_server(server, url, vpn, png_data, pcap_data, metadata) -> bool:
-    global session, whoami
-    payload = {
-        'id': whoami,
-        'url': url,
-        'vpn': vpn,
-        'png_data': png_data.hex(),
-        'pcap_data': pcap_data.hex(),
-        'metadata': json.dumps(metadata)
-    }
-    try:
-        return session.post(urljoin(server, "work"), data=payload).status_code == 200
-    except requests.RequestException:
+    def _setup_client_and_vpn(self):
+        """Get VPN account and configuration from server"""
+        response = self._server_request("setup", params={'id': self.state['identifier']})
+        if not response or not (account := response.get("account")):
+            return None
+
+        # Update all state/config values from server response
+        self.state['visit_count'] = response.get("visit_count", self.state.get('visit_count'))
+        self.config.update({
+            'grace': response.get("grace", self.config.get('grace')),
+            'min_wait': response.get("min_wait", self.config.get('min_wait')),
+            'max_wait': response.get("max_wait", self.config.get('max_wait')),
+            'visit_count': response.get("visit_count", self.config.get('visit_count')),
+            'display_size': tuple(response.get("display_size", self.config.get('display_size'))),
+            'fullscreen': response.get("fullscreen", self.config.get('fullscreen'))
+        })
+        return account
+
+    def _get_next_task(self):
+        """Get next URL to visit from server"""
+        params = {
+            'id': self.state['identifier'],
+            'server': self.state['current_server'] or 'None'
+        }
+        return self._server_request("work", params=params)
+
+    @retry_with_backoff(attempts=5, base_delay=1, max_delay=30, jitter=0.3, exceptions=(requests.RequestException,))
+    def _post_results(self, task, screenshot, pcap, metrics):
+        """POST visit results to server"""
+        data = {
+            'id': self.state['identifier'],
+            'url': task['url'],
+            'vpn': self.state['current_server'],
+            'png_data': screenshot.hex(),
+            'pcap_data': pcap.hex(),
+            'metadata': json.dumps(metrics)
+        }
+        return self._server_request("work", method="POST", data=data) is not None
+
+    # Core Workflow Methods
+    @retry_with_backoff(attempts=5, base_delay=1, max_delay=30, jitter=0.3, exceptions=(requests.RequestException,))
+    def _rotate_vpn_server(self):
+        """Request new VPN server from server, supplying current if available"""
+        params = {
+            'id': self.state['identifier'],
+            'server': self.state['current_server'] or 'None'
+        }
+        response = self._server_request("server", params=params)
+
+        if response:
+            print(f"Switching to VPN server: {response}")
+            self._run_mullvad_command("relay", "set", "location", response)
+            self.state['current_server'] = response
+            self.state['current_visit_count'] = 0
+            return True
+
+        print("No available VPN servers, waiting...")
+        time.sleep(300)
         return False
 
-def successful_tunnel_restart() -> bool:
-    toggle_mullvadvpn_tunnel("off")
-    toggle_mullvadvpn_service("off")
-    toggle_mullvadvpn_service("on")
-    toggle_mullvadvpn_tunnel("on")
-    return is_mullvadvpn_tunnel_running()
+    def _initialize_vpn(self):
+        """Full VPN initialization sequence"""
+        try:
+            # Disconnect if currently connected
+            if self.is_tunnel_active():
+                self._set_tunnel_state("disconnect")
+            # Get new account configuration and configure client + VPN
+            if not (account := self._setup_client_and_vpn()):
+                return False
+            # Apply configuration
+            self._configure_vpn(account)
+            # Connect to VPN
+            self._set_tunnel_state("connect")
+            # Verify connection
+            if not self.is_tunnel_active():
+                raise RuntimeError("VPN tunnel failed to activate")
+            return True
+        except Exception as e:
+            print(f"VPN initialization error: {e}")
+            return False
 
-def generate_identifier() -> str:
-    ip_addresses = []
+    def _execute_task(self, task):
+        """Process single visit task"""
+        print(f"Processing: {task['url']}")
 
-    # Get info about all network interfaces
-    for _, interface_addresses in psutil.net_if_addrs().items():
-        for address in interface_addresses:
-            if address.family == socket.AF_INET:  # Check for IPv4 addresses
-                ip_address = address.address
-                if ip_address != "127.0.0.1":  # Exclude localhost
-                    ip_addresses.append(ip_address)
+        # Rotate server if needed
+        if self.state['current_visit_count'] >= self.config['visit_count'] or not self.state['current_server']:
+            if not self._rotate_vpn_server():
+                return False
 
-    # Fallback to localhost if no external IP found
-    if not ip_addresses:
-        ip_addresses.append('127.0.0.1')
+        # Prepare to start packet capture
+        time.sleep(3)  # Stabilization period
+        self._start_pcap_capture()
 
-    # Concatenate all IP addresses into a single string
-    concatenated_ips = ''.join(ip_addresses)
+        # Visit website
+        try:
+            start_time = datetime.now().isoformat(sep=' ', timespec='milliseconds')
+            screenshot, metrics = self._visit_website(task['url'])
+            pcap_data = self._end_pcap_capture()
 
-    # Hash the concatenated string to generate a fixed-length identifier
-    hash_object = hashlib.md5(concatenated_ips.encode())
-    hex_dig = hash_object.hexdigest()
+            end_time = datetime.now().isoformat(sep=' ', timespec='milliseconds')
+        except Exception as e:
+            print(f"Task execution error: {e}")
+            return
 
-    # Return the first 16 characters of the hash
-    return hex_dig[:16]
+        # Fetch metrics
+        if metrics:
+            metrics.update({
+                'time_start': start_time,
+                'time_end': end_time,
+                'vpn_tunnel_visits_since_connect': self.state['current_visit_count'] + 1
+            })
 
-def main(args) -> None:
-    global whoami, session, visit_count, current_server
+        # POST results
+        success = self._post_results(task, screenshot, pcap_data, metrics)
+        if success:
+            self.state['current_visit_count'] += 1
 
-    # deterministic identifier of 16 characters, derived from the IP addresses
-    # of the machine
-    whoami = generate_identifier()
-    print(f"whoami: {whoami}")
+        return success
 
-    server = "http://" + args.server if not args.server.startswith("http://") else args.server
-
-    while True:
-        while not setup(server):
-            r = random.randint(10, 20)
-            print(f"VPN is not setup, sleeping for {r} seconds")
-            time.sleep(r)
-
-        # Keep count of how many visits have been performed using current VPN server
-        current_visit_count = 0
-
+    def run(self):
+        """Main execution loop"""
         while True:
-            work = get_work(server)
-            if not work:
-                # No work means we're out of URLs to visit for this VPN-server
-                # at which point, the connection and current_visit_count is reset
-                configure_mullvad_for_visit(server)
-                current_visit_count = 0
-                r = random.randint(5, 10)
-                print(f"No work available for current server, sleeping for {r} seconds then continuing with new server")
-                time.sleep(r)
-            else:
-                if not is_mullvadvpn_service_running():
-                    toggle_mullvadvpn_service("on")
-                    toggle_mullvadvpn_tunnel("on")
-                print(f"{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} Got work: {work['url']}")
-                driver = start_browser(args.firefox)
-                if driver is None:
-                    print("Failed to start browser, skipping work")
+            # Ensure VPN is initialized
+            while not self._initialize_vpn():
+                time.sleep(random.randint(10, 20))
+            # Process tasks
+            while True:
+                if not (task := self._get_next_task()):
+                    time.sleep(random.randint(5, 10))
                     continue
-                # If we've reached enough visits for this VPN connection, we ask for a new one.
-                if current_visit_count >= visit_count or not current_server:
-                    configure_mullvad_for_visit(server)
-                    current_visit_count = 0
-                # Sleep for 3 seconds to let the browser start up and/or VPN connection settle.
-                time.sleep(3)
-                time_start = datetime.now().isoformat(sep=' ', timespec='milliseconds')
-                start_pcap_capture()
-                try:
-                    png, metadata = visit_site(driver, work["url"], args.timeout)
-                except:
-                    print("Failed to visit site (no png and/or no metadata), skipping work")
-                    end_pcap_capture()
-                    continue
-                pcap_bytes = end_pcap_capture()
-                time_end = datetime.now().isoformat(sep=' ', timespec='milliseconds')
-                metadata['time_start'] = time_start
-                metadata['time_end'] = time_end
-                metadata['num_visit'] = current_visit_count + 1
-                print(f"Captured {len(png)/1024:.1f} KiB of png data.")
-                print(f"Captured {len(pcap_bytes)/1024:.1f} KiB of pcap data.")
-                while not post_work_to_server(server, work["url"], current_server, png, pcap_bytes, metadata):
-                    r = random.randint(10, 20)
-                    print(f"Failed to post work to server, retrying in {r} seconds")
-                    time.sleep(r)
-                current_visit_count += 1
+
+                if not self.is_tunnel_active():
+                    self._set_tunnel_state("connect")
+
+                self._execute_task(task)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Capture a screenshot with Selenium and send to a server.")
-    # Mullvad Browser binary path argument with a default value
-    parser.add_argument("--firefox", default="/usr/lib/mullvad-browser/mullvadbrowser.real",
-                        help="Path to the Firefox binary.")
-    # Timeout argument with a default value of 20 seconds
-    parser.add_argument("--timeout", type=float, default=20.0,
-                        help="Time to wait for website to load.")
-    # Collection server URL argument with a default value
-    parser.add_argument("--server", default="http://192.168.100.1:5000",
-                        help="URL of the collection server.")
-    parser.add_argument("--restart-tunnel-threshold", type=int, default=5,
-                        help="Restart tunnel threshold.")
-    args = parser.parse_args()
-    main(args)
+    client = DataCollectionClient()
+    client.run()

@@ -1,347 +1,478 @@
 #!/usr/bin/env python3
-from flask import Flask, request, jsonify
-import threading
-import requests
-import random
-import argparse
-import os, sys
-import time
+"""
+Data Collection Server for VPN-based web browsing experiments
+Handles client coordination, work distribution, and result collection
+"""
+import sys
 import json
-import re
+import time
+import random
+import requests
+import threading
+from pathlib import Path
+from flask import Flask, request, jsonify
 
-# shared states, protected by lock
-accounts = []
-allocated_accounts = {}
-vpn_server_list = []
-done_dict = {}
-pending_visits = []
-url2line = {}
-datadir = None
-samples = None
-visits = None
-starting_time = None
-last_update_time = None
-unique_clients = set()
-lock = threading.Lock()
+class DataCollectionServer:
+    def __init__(self, config_path="env/config.json"):
+        """
+        Initialize the data collection server
 
-app = Flask(__name__)
+        Args:
+            config_path (str): Path to JSON configuration file
+        """
+        # Create Flask application instance
+        self.app = Flask(__name__)
 
-@app.route('/')
-def hello():
-    return "hello world - here be a data collection server\nAvailable endpoints: /server [GET], /setup [GET], /status [GET], /work [GET,POST]\n"
+        # Thread lock for thread-safe operations
+        self.lock = threading.Lock()
 
-@app.route('/setup', methods=['GET'])
-def setup():
-    global allocated_accounts, visits
-    with lock:
-        id = request.args.get('id', default="*", type=str)
-        if id == "*":
-            return jsonify({"error": "missing id"}), 400
-        if id in allocated_accounts:
-            return jsonify({
-            "account": allocated_accounts[id],
-            "visit_count": visits
-        }), 200
+        # Load configuration from file
+        self.config = self._load_config(config_path)
+
+        # Initialize server state variables
+        self._initialize_state()
+
+        # Set up Flask routes/endpoints
+        self._setup_routes()
+
+    def _load_config(self, config_path):
+        """
+        Load and validate server configuration from JSON file
+
+        Args:
+            config_path (str): Path to configuration file
+
+        Returns:
+            dict: Loaded configuration
+        """
         try:
-            allocated_accounts[id] = accounts.pop()
-            return jsonify({
-                "account": allocated_accounts[id],
-                "visit_count": visits
-            }), 200
-        except:
-            return jsonify({"error": "no available accounts remain"}), 400
+            with open(config_path) as f:
+                config = json.load(f)
 
-@app.route('/status', methods=['GET'])
-def status():
-    global done_dict, starting_time, last_update_time, unique_clients, allocated_accounts, vpn_server_list, url2line, lock
+            # Verify all required server configurations exist
+            required_server = ['datadir', 'urllist', 'vpnlist', 'database']
+            for key in required_server:
+                if key not in config.get('server', {}):
+                    raise ValueError(f"Missing required server config: {key}")
+                # Validate file paths exist (except datadir which we'll create)
+                if key != 'datadir' and not Path(config['server'][key]).exists():
+                    raise FileNotFoundError(f"Config path does not exist: {config['server'][key]}")
 
-    with lock:
-        total_collected = 0
-        for vpn in vpn_server_list:
-            total_collected += sum(done_dict[vpn].values())
-        return jsonify({
-            "total_to_collect": samples * len(url2line) * len(vpn_server_list),
-            "total_collected": total_collected,
-            "elapsed": time.time() - starting_time,
-            "last_update": time.time() - last_update_time,
-            "unique_clients": list(unique_clients),
-            "allocated_accounts": f"{len(allocated_accounts)} of {len(accounts)}",
-        })
+            # Set default values if not specified
+            config.setdefault('server', {
+                "samples": 5,               # Default number of samples per URL
+                "visits": 10,               # Default number of visits per VPN connection
+                "host": "192.168.100.1",    # Default server host
+                "port": 5000                # Default server port
+            })
+            config.setdefault('timing', {
+                'grace': 1,         # Additional wait time after page load
+                'min_wait': 2,      # Minimum time to spend on each page
+                'max_wait': 30      # Maximum time to spend on each page
+            })
+            config.setdefault('client', {
+                'display_size': [1920, 1080],   # Default display size for headless browser
+                'fullscreen': True              # Default to fullscreen mode
+            })
 
-@app.route('/server', methods=['GET'])
-def get_server():
-    global unique_clients, pending_visits, lock
+            return config
+        except Exception as e:
+            print(f"[ERROR] Config loading failed: {e}")
+            sys.exit(1)
 
-    with lock:
-        id = request.args.get('id', default="*", type=str)
-        server = request.args.get('server', default="*", type=str)
-        if not id or not server:
-            return ("missing id or previous server", 400)
-        unique_clients.add(id)
+    def _initialize_state(self):
+        """Initialize all server state variables and data structures"""
+        self.accounts = []               # Available VPN accounts
+        self.allocated_accounts = {}     # Accounts assigned to clients
+        self.vpn_server_list = []        # List of available VPN servers
+        self.done_dict = {}              # Tracks completed samples per VPN/URL
+        self.pending_visits = []         # Work still needing completion
+        self.url2line = {}               # Maps URLs to line numbers in urllist
+        self.unique_clients = set()      # Tracks connected client IDs
+        self.starting_time = time.time() # Server start timestamp
+        self.last_update_time = self.starting_time  # Last data update timestamp
 
-        # Client wants new server, so we return a random one from pending visits
-        # But we ensure that the server is not the same as the previous one used
-        # unless it is the only one available / remaining
-        available_servers = {visit['vpn'] for visit in pending_visits}
-        if len(available_servers) > 1 and server in available_servers:
-            available_servers.discard(server)
-        if not available_servers:
-            return jsonify({"error": "no VPN servers available"}), 400
-        return jsonify(random.choice(list(available_servers)))
+        # Load all required data files and initialize structures
+        self._load_vpn_servers()    # Load VPN server list
+        self._load_urls()           # Load URL list to visit
+        self._init_data_directory()  # Set up data directory structure
+        self._load_accounts()       # Load VPN accounts
+        self._init_visit_list()     # Initialize work queue
 
-@app.route('/work', methods=['GET'])
-def get_work():
-    global unique_clients, pending_visits, lock
+    def _setup_routes(self):
+        """Register all Flask route handlers"""
+        # Basic info endpoint
+        self.app.route('/')(self.hello)
 
-    with lock:
-        id = request.args.get('id', default="*", type=str)
-        server = request.args.get('server', default="*", type=str)
-        if id == '*':
-            return ("missing id", 400)
-        unique_clients.add(id)
+        # Client setup endpoint
+        self.app.route('/setup', methods=['GET'])(self.setup_client)
 
-        # Only return work for the specific server being used by the client right now
-        if server != '*':
-            filtered_visits = [visit for visit in pending_visits if visit["vpn"] == server]
-            if not filtered_visits:
-                return jsonify({"error": "no links left to visit"}), 400
+        # Server status endpoint
+        self.app.route('/status', methods=['GET'])(self.get_status)
+
+        # VPN server assignment endpoint
+        self.app.route('/server', methods=['GET'])(self.get_vpn_server)
+
+        # Work distribution endpoints
+        self.app.route('/work', methods=['GET'])(self.get_work)
+        self.app.route('/work', methods=['POST'])(self.post_work)
+
+    def hello(self):
+        """
+        Root endpoint showing available routes
+
+        Returns:
+            str: HTML formatted welcome message
+        """
+        return (
+            "<h2>👋 Welcome to the Data Collection Server!</h2>"
+            "<p>Available endpoints:</p>"
+            "<ul>"
+            "<li><b>/setup</b> (GET) - Get your VPN account and timing info</li>"
+            "<li><b>/status</b> (GET) - See server status and progress</li>"
+            "<li><b>/server</b> (GET) - Get a VPN server to use</li>"
+            "<li><b>/work</b> (GET/POST) - Get or submit your assigned work</li>"
+            "</ul>"
+            "<pre>"
+            "        ──────▄▌▐▀▀▀▀▀▀▀▀▀▀▀▌\n"
+            "        ───▄▄██▌█ Data      █\n"
+            "        ▄▄▄▌▐██▌█ Collection█\n"
+            "        ███████▌█   Time!   █\n"
+            "        ▀❍▀▀▀▀▀▀▀▀▀▀▀▀▀▀❍▀▀▀\n"
+            "</pre>"
+        )
+
+    def _load_vpn_servers(self):
+        """Load and validate VPN servers from config file"""
+        # Read VPN server list from file
+        with open(self.config['server']['vpnlist']) as f:
+            vpns = [line.strip() for line in f if line.strip()]
+
+        # Validate servers against Mullvad's API
+        try:
+            mullvad_servers = requests.get("https://api.mullvad.net/app/v1/relays").json()['wireguard']['relays']
+            invalid = [v for v in vpns if not any(s['hostname'] == v for s in mullvad_servers)]
+
+            if invalid:
+                print(f"[ERROR] Invalid servers: {', '.join(invalid)}")
+                sys.exit(1)
+
+            self.vpn_server_list = vpns
+            self.done_dict = {vpn: {} for vpn in self.vpn_server_list}
+        except Exception as e:
+            print(f"[ERROR] Failed to validate VPN servers: {e}")
+            sys.exit(1)
+
+    def _load_urls(self):
+        """Load and validate URLs from config file"""
+        # Read URL list from file
+        with open(self.config['server']['urllist']) as f:
+            urls = [line.strip() for line in f if line.strip()]
+
+        # Check for duplicates
+        if len(urls) != len(set(urls)):
+            print("[ERROR] URL list contains duplicates")
+            sys.exit(1)
+
+        # Validate URL formats
+        for url in urls:
+            if not url.startswith(("http://", "https://")):
+                print(f"[ERROR] Invalid URL (must be HTTP/HTTPS): {url}")
+                sys.exit(1)
+
+        # Create URL to line number mapping
+        self.url2line = {url: i for i, url in enumerate(urls)}
+
+        # Initialize completion tracking for each VPN/URL combination
+        for vpn in self.vpn_server_list:
+            for url in urls:
+                self.done_dict[vpn][url] = 0
+
+    def _init_data_directory(self):
+        """Initialize data directory structure"""
+        datadir = Path(self.config['server']['datadir'])
+
+        if not datadir.exists():
+            # Create fresh directory structure
+            print(f"[INIT] Creating new data directory at {datadir}")
+            datadir.mkdir()
+
+            # Create subdirectories for each VPN server
+            for vpn in self.vpn_server_list:
+                vpn_dir = datadir / vpn
+                vpn_dir.mkdir()
+
+                # Create subdirectories for each URL
+                for url in self.url2line:
+                    url_dir = vpn_dir / str(self.url2line[url])
+                    url_dir.mkdir()
         else:
-            filtered_visits = pending_visits
-        return jsonify(random.choice(filtered_visits))
+            print(f"[INIT] Using existing data directory at {datadir}")
 
+    def _load_accounts(self):
+        """Load VPN accounts from database file"""
+        try:
+            with open(self.config['server']['database']) as f:
+                self.accounts = json.load(f)["accounts"]
 
-@app.route('/work', methods=['POST'])
-def post_work():
-    global done_dict, datadir, samples, last_update_time, unique_clients, pending_visits, lock
-
-    id = request.form.get('id')                 # unique identifier per client
-    url = request.form.get('url')               # url visited
-    vpn = request.form.get('vpn')               # name of vpn server used
-    png_data = request.form.get('png_data')     # hex-encoded PNG file
-    pcap_data = request.form.get('pcap_data')   # hex-encoded PCAP file
-    metadata = request.form.get('metadata')     # metadata about the visit (QoE, timestamp, etc.)
-
-    if not id or not url or not png_data or not pcap_data or not vpn or not metadata:
-        return "missing one or more required fields", 400
-
-    print("Received work for url: ", url, 'from', id)
-
-    try:
-        png_data = bytes.fromhex(png_data)
-        pcap_data = bytes.fromhex(pcap_data)
-    except:
-        return "failed to decode hex-encoded data", 400
-
-    png_kib = len(png_data)/1024
-    pcap_kib = len(pcap_data)/1024
-
-    print(f"Got {png_kib:.1f} KiB of PNG data")
-    print(f"Got {pcap_kib:.1f} KiB of pcap data")
-
-    # we report 200 here because the client did its reporting, just that the
-    # data was too small or large so we won't save it and repeat the visit
-    if pcap_kib < 3 or pcap_kib > 1500:
-        return ("pcap data too small, but OK", 200)
-    if png_kib < 3:
-        return ("png data too small, but OK", 200)
-
-    print('Saving the sample..')
-    with lock:
-        if done_dict[vpn][url] >= samples:
-            return ("Already done, but OK", 200)
-
-        # save to disk: datadir/f"{vpn_dir}/{url2line[url]}".{png,pcap}
-        site = url2line[url]
-        sample = get_free_sample(site, vpn)
-        p = os.path.join(datadir, vpn, f"{str(site)}", f"{sample}")
-        with open(f"{p}.png", 'wb') as f:
-            f.write(png_data)
-        with open(f"{p}.pcap", 'wb') as f:
-            f.write(pcap_data)
-        with open(f"{p}.json", 'w') as f:
-            f.write(json.dumps(json.loads(metadata), indent=2))
-        # increment and see if all visits for this combo is done
-        done_dict[vpn][url] += 1
-        visit = {"url": url, "vpn": vpn}
-        if done_dict[vpn][url] >= samples and visit in pending_visits:
-            print(f"Done with {url} for {vpn}, there are now {len(pending_visits) - 1} combinations left")
-            pending_visits.remove(visit)
-
-        last_update_time = time.time()
-
-    return ("OK\n", 200)
-
-def get_free_sample(site, vpn) -> int:
-    global datadir, vpn_server_list
-    sample = 0
-    while True:
-        p = os.path.join(datadir, vpn, f"{str(site)}", f"{sample}.png")
-        if not os.path.exists(p):
-            return sample
-        sample += 1
-
-def setup_url_list(url_list) -> None:
-    global done_dict, vpn_server_list, url2line
-
-    urls = []
-    with open(url_list, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            urls.append(line)
-
-    # requirement: all URLs must be unique
-    if len(urls) != len(set(urls)):
-        print("URL list contains duplicates, exiting")
-        print(f"URL length: {len(urls)}")
-        print(f"URL set length: {len(set(urls))}")
-        sys.exit(1)
-    # requirement: all URLs must be HTTP(S)
-    for url in urls:
-        if not url.startswith("http://") and not url.startswith("https://"):
-            print(f"URL {url} is not HTTP(S), exiting")
+            # Randomize account order for distribution
+            random.shuffle(self.accounts)
+            print(f"[INIT] Loaded {len(self.accounts)} VPN accounts")
+        except Exception as e:
+            print(f"[ERROR] Failed to load accounts: {e}")
             sys.exit(1)
 
-    for vpn in vpn_server_list:
-        for (i, url) in enumerate(urls):
-            url2line[url] = i
-            done_dict[vpn][url] = 0
+    def _init_visit_list(self):
+        """Initialize pending visits tracking"""
+        self.pending_visits = [
+            {"url": url, "vpn": vpn}
+            for vpn in self.done_dict
+            for url, count in self.done_dict[vpn].items()
+            if count < self.config['server'].get('samples', 100)
+        ]
+        print(f"[INIT] Initialized with {len(self.pending_visits)} pending visits")
 
-    print(f"Loaded {len(urls)} URLs from {url_list}")
+    def setup_client(self):
+        """
+        Endpoint for client setup
 
-def setup_vpn_list(vpn_list) -> None:
-    global vpn_server_list, done_dict
+        Returns:
+            JSON: Account info and client configuration parameters or error message
+        """
+        id = request.args.get('id')
+        if not id:
+            return jsonify({"error": "Client ID required"}), 400
 
-    vpns = []
-    with open(vpn_list, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            vpns.append(line)
+        with self.lock:
+            if id in self.allocated_accounts:
+                # Client already has an account
+                account = self.allocated_accounts[id]
+                print(f"[CLIENT] Returning existing account for {id}")
+            else:
+                try:
+                    # Assign new account to client
+                    account = self.accounts.pop()
+                    self.allocated_accounts[id] = account
+                    print(f"[CLIENT] Assigned new account to {id}")
+                except IndexError:
+                    print(f"[ERROR] No accounts available for {id}")
+                    return jsonify({"error": "No available accounts"}), 400
 
-    # Assert all servers entered actually support DAITA
-    mullvad_servers = requests.get("https://api.mullvad.net/app/v1/relays").json()['wireguard']['relays']
-    invalid_servers = [
-        vpn_name for vpn_name in vpns if not any(server['hostname'] == vpn_name for server in mullvad_servers)
-    ]
+            return jsonify({
+                "account": account,
+                "visit_count": self.config['server'].get('visits', 10),
+                "grace": self.config['timing'].get('grace', 1),
+                "min_wait": self.config['timing'].get('min_wait', 2),
+                "max_wait": self.config['timing'].get('max_wait', 30),
+                "display_size": self.config['server'].get('display_size', [1920,1080]),
+                "fullscreen": self.config['server'].get('fullscreen', True)
+            })
 
-    if invalid_servers:
-        print(f"The following server-names are not valid: {', '.join(invalid_servers)}")
-        sys.exit(1)
-    vpn_server_list = vpns.copy()
-    for vpn in vpn_server_list:
-        done_dict[vpn] = dict()
+    def get_status(self):
+        """
+        Endpoint for server status information
 
-def setup_datadir(dir) -> None:
-    global datadir, url2line, samples, done_dict, vpn_server_list
-    total_to_collect = samples * len(url2line) * len(vpn_server_list)
-    total_samples = 0
+        Returns:
+            JSON: Server status including collection progress
+        """
+        with self.lock:
+            # Calculate total collected samples
+            total_collected = sum(
+                sum(counts.values())
+                for counts in self.done_dict.values()
+            )
 
-    if os.path.exists(dir):
-        if not os.access(dir, os.W_OK):
-            print(f"datadir {dir} is not writable, exiting")
-            sys.exit(1)
+            return jsonify({
+                "total_to_collect": self.config['server'].get('samples', 100) * len(self.url2line) * len(self.vpn_server_list),
+                "total_collected": total_collected,
+                "elapsed": time.time() - self.starting_time,
+                "last_update": time.time() - self.last_update_time,
+                "unique_clients": list(self.unique_clients),
+                "allocated_accounts": f"{len(self.allocated_accounts)}/{len(self.accounts)}"
+            })
 
-        for vpn in vpn_server_list:
-            vpn_dir = os.path.join(dir, vpn)
-            if not os.path.exists(vpn_dir):
-                print(f"{vpn_dir} is missing, exiting")
-                sys.exit(1)
-            if not os.access(vpn_dir, os.W_OK):
-                print(f"{vpn_dir} is not writable, exiting")
-                sys.exit(1)
-            all_files = [
-                [f for f in files if not f.startswith(".")]
-                for root, _, files in sorted(
-                    os.walk(vpn_dir),
-                    key=lambda x: int(re.search(r"(\d+)$", x[0]).group(1))
-                    if re.search(r"(\d+)$", x[0]) else float("inf")
-                )
-            ]
+    def get_vpn_server(self):
+        """
+        Endpoint to get VPN server assignment
+        Returns a VPN server different from the client's current one if possible
 
-            done = [len(files) for files in all_files]
-            if sum(done) % 3 != 0:
-                print(f"{vpn_dir} (off) does not contain a multiple of 3 files, exiting")
-                sys.exit(1)
+        Returns:
+            JSON: VPN server hostname or error message
+        """
+        id = request.args.get('id')
+        server = request.args.get('server')
+        if not id or not server:
+            return "Client ID and current server required", 400
 
-            png_files = [[f for f in files if f.endswith(".png")] for files in all_files]
+        with self.lock:
+            self.unique_clients.add(id)
 
-            for i, pnglist in enumerate(png_files):
-                pcaplist = [png.replace(".png", ".pcap") for png in pnglist]
-                if any(pcap not in all_files[i] for pcap in pcaplist):
-                    print(f"{vpn_dir} (off) - a pcap file is missing, exiting")
-                    sys.exit(1)
-            
-            # each sample consists of a PNG, PCAP and JSON file so we do // 3 for each of these
-            for i, url in enumerate(done_dict[vpn]):
-                done_dict[vpn][url] = done[i] // 3
-            total_samples += sum(done) // 3
+            # Get available VPN servers with pending work
+            available = {v['vpn'] for v in self.pending_visits}
 
-        print(f"datadir {dir} exists, contains {total_samples} samples, {total_to_collect - total_samples} to go")
-    else:
-        os.mkdir(dir)
-        # create subdirs: one per server, one per site/line per server
-        for vpn in vpn_server_list:
-            os.mkdir(os.path.join(dir, vpn))
-            for url in done_dict[vpn]:
-                os.mkdir(os.path.join(dir, vpn, f"{url2line[url]}"))
+            # Prefer a different server than the current one
+            if len(available) > 1 and server in available:
+                available.remove(server)
 
-        print(f"datadir {dir} created, contains 0 samples, {total_to_collect} to go")
+            if not available:
+                print(f"[CLIENT] No VPN servers available for {id}")
+                return jsonify({"error": "No VPN servers available"}), 400
 
-    datadir = dir
+            assigned_server = random.choice(list(available))
+            print(f"[CLIENT] Assigned VPN server {assigned_server} to {id}")
+            return jsonify(assigned_server)
 
-def setup_database(database_file) -> None:
-    global accounts
+    def get_work(self):
+        """
+        Endpoint to get work assignment
+        Returns a URL to visit with the specified VPN server
 
-    with open(database_file, 'r') as file:
-        d = json.load(file)
-        accounts = d["accounts"]
+        Returns:
+            JSON: Work assignment (URL + VPN) or error message
+        """
+        id = request.args.get('id')
+        server = request.args.get('server')
+        if not id:
+            return "Client ID required", 400
 
-        # randomize the accounts
-        random.shuffle(accounts)
+        with self.lock:
+            self.unique_clients.add(id)
+            visits = self.pending_visits
 
-    print(f"Loaded {len(accounts)} accounts from {database_file}")
+            # Filter by requested VPN server if specified
+            if server and server != 'None':
+                visits = [v for v in visits if v["vpn"] == server]
 
-def setup_visit_list():
-    global pending_visits, done_dict, samples
+            if not visits:
+                print(f"[CLIENT] No work available for {id}")
+                return jsonify({"error": "No work available"}), 400
 
-    pending_visits = [
-        {"url": url, "vpn": vpn}
-        for vpn in done_dict
-        for url, count in done_dict[vpn].items()
-        if count < samples
-    ]
+            assignment = random.choice(visits)
+            print(f"[CLIENT] Assigned work to {id}: {assignment['url']} via {assignment['vpn']}")
+            return jsonify(assignment)
 
-def main(args) -> None:
-    global samples, starting_time, last_update_time, visits
-    if not 0 < args.samples < 1000:
-        print(f"samples must be in range 0 < x < 1000, exiting")
-        sys.exit(1)
-    samples = args.samples
-    visits = args.visits
+    def post_work(self):
+        """
+        Endpoint to submit work results
+        Handles screenshot (PNG), network capture (PCAP), and metadata
 
-    setup_vpn_list(args.vpnlist)
-    setup_url_list(args.urllist)
-    setup_datadir(args.datadir)
-    setup_database(args.database)
-    setup_visit_list()
+        Returns:
+            JSON: Success/error status
+        """
+        required_fields = ['id', 'url', 'vpn', 'png_data', 'pcap_data', 'metadata']
+        if any(f not in request.form for f in required_fields):
+            print("[POST] Missing required fields in submission")
+            return "Missing required fields", 400
 
-    starting_time = time.time()
-    last_update_time = starting_time
-    app.run(debug=False, threaded=True, port=args.port, host=args.host)
+        try:
+            # Convert hex-encoded data back to bytes
+            png_data = bytes.fromhex(request.form['png_data'])
+            pcap_data = bytes.fromhex(request.form['pcap_data'])
+        except Exception as e:
+            print(f"[POST] Invalid hex data: {e}")
+            return "Invalid hex data", 400
+
+        # Calculate and log data sizes
+        png_size = len(png_data)
+        pcap_size = len(pcap_data)
+        client_id = request.form['id']
+        url = request.form['url']
+        vpn = request.form['vpn']
+
+        print(f"\n[POST] Received work from {client_id}:")
+        print(f"  URL: {url}")
+        print(f"  VPN: {vpn}")
+        print(f"  PNG size: {png_size:,} bytes ({png_size/1024:.1f} KiB)")
+        print(f"  PCAP size: {pcap_size:,} bytes ({pcap_size/1024:.1f} KiB)")
+
+        # Validate data sizes meet minimum requirements, return 200 OK to avoid
+        # triggering client-side errors or retries for invalid data
+        if pcap_size < 10*1024 or pcap_size > 2000*1024:
+            print(f"[POST] Rejected: PCAP size {pcap_size} out of bounds")
+            return "PCAP size invalid", 200
+        if png_size < 10*1024:
+            print(f"[POST] Rejected: PNG too small ({png_size} bytes)")
+            return "PNG size invalid", 200
+
+        with self.lock:
+            # Check if we've already collected enough samples for this VPN/URL combo
+            if self.done_dict[vpn][url] >= self.config['server'].get('samples', 100):
+                print(f"[POST] Rejected: Already completed {self.done_dict[vpn][url]} samples for {url} via {vpn}")
+                return "Already completed", 200
+
+            # Determine where to save the files
+            site_num = self.url2line[url]
+            sample_num = self._get_free_sample_num(vpn, site_num)
+            base_path = Path(self.config['server']['datadir']) / vpn / str(site_num) / str(sample_num)
+
+            # Save all three file types (PNG, PCAP, JSON)
+            try:
+                base_path.with_suffix('.png').write_bytes(png_data)
+                base_path.with_suffix('.pcap').write_bytes(pcap_data)
+                base_path.with_suffix('.json').write_text(request.form['metadata'])
+                print(f"[POST] Saved sample #{sample_num} to {base_path}")
+            except Exception as e:
+                print(f"[ERROR] Failed to save files: {e}")
+                return "Failed to save data", 500
+
+            # Update completion tracking
+            self.done_dict[vpn][url] += 1
+            visit = {"url": url, "vpn": vpn}
+
+            # Remove from pending if we've hit our sample target
+            if self.done_dict[vpn][url] >= self.config['server'].get('samples', 100) and visit in self.pending_visits:
+                self.pending_visits.remove(visit)
+                print(f"[POST] Completed all samples for {url} via {vpn}")
+
+            self.last_update_time = time.time()
+
+        print(f"[POST] Successfully processed sample from {client_id}")
+        return jsonify({
+            "status": "OK",
+            "message": f"Saved sample #{sample_num} for {url} via {vpn}"
+        }), 200
+
+    def _get_free_sample_num(self, vpn, site_num):
+        """
+        Find next available sample number for a site
+
+        Args:
+            vpn (str): VPN server name
+            site_num (int): Site line number
+
+        Returns:
+            int: Next available sample number
+        """
+        dir_path = Path(self.config['server']['datadir']) / vpn / str(site_num)
+
+        # Get all existing sample numbers
+        existing = [int(f.stem) for f in dir_path.glob('*') if f.stem.isdigit()]
+
+        # Return next available number
+        return max(existing) + 1 if existing else 0
+
+    def run(self):
+        """
+        Start the Flask server
+        Uses host and port from configuration
+        """
+        host = self.config['server'].get('host', '192.168.100.1')
+        port = self.config['server'].get('port', 5000)
+
+        print(f"\n[SERVER] Starting on {host}:{port}")
+        print(f"[SERVER] Samples per URL: {self.config['server'].get('samples', 100)}")
+        print(f"[SERVER] Visits per VPN: {self.config['server'].get('visits', 10)}")
+        print(f"[SERVER] Timing - Grace: {self.config['timing'].get('grace', 1)}s")
+        print(f"[SERVER] Timing - Min Wait: {self.config['timing'].get('min_wait', 2)}s")
+        print(f"[SERVER] Timing - Max Wait: {self.config['timing'].get('max_wait', 30)}s")
+
+        self.app.run(
+            host=host,
+            port=port,
+            debug=False
+        )
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Run a data collection server.")
-    parser.add_argument("--datadir", type=str, required=True, help="Directory to store data in.")
-    parser.add_argument("--urllist", type=str, required=True, help="List of URLs to collect data for.")
-    parser.add_argument("--vpnlist", type=str, required=True, help="List of VPNs relays to use")
-    parser.add_argument("--samples", type=int, default=100, help="Number of samples to collect for each URL.")
-    parser.add_argument("--visits", type=int, default=10, help="Number of visits to perform per VPN connection.")
-    parser.add_argument("--host", type=str, default="192.168.100.1", help="Host to listen on.")
-    parser.add_argument("--port", type=int, default=5000, help="Port to listen on.")
-    parser.add_argument("--database", type=str, required=True, help="File with mullvad account information.")
-
-    args = parser.parse_args()
-    main(args)
+    # Create and run server instance
+    server = DataCollectionServer()
+    server.run()
