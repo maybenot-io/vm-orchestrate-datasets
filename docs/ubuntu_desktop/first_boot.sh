@@ -28,8 +28,8 @@ while ! check_internet_connection; do
 done
 log "Internet Connection established"
 
-log "Making sure curl and git is installed.."
-if ! sudo apt install curl git -y; then
+log "Making sure curl, git and ssh are installed.."
+if ! sudo apt install curl git openssh-server -y; then
     log "Error installing curl"
     exit 1
 fi
