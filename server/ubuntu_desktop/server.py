@@ -116,6 +116,7 @@ class DataCollectionServer:
         self._load_urls()  # Load URL list to visit
         self._load_vpn_servers()  # Load VPN server list
         self._init_data_directory()  # Set up data directory structure
+        self._load_progress_from_current_data()  # Load current progress, if any
         self._load_accounts()  # Load VPN accounts
         self._init_visit_list()  # Initialize work queue
 
@@ -194,16 +195,7 @@ class DataCollectionServer:
             if invalid:
                 print(f"[ERROR] Invalid servers: {', '.join(invalid)}")
                 sys.exit(1)
-
             self.vpn_server_list = vpns
-            daita = self.config["client"].get("daita", "off")
-            daita_modes = ["on", "off"] if daita == "on" else ["off"]
-
-            # Initialize done_dict[vpn][url][daita] = 0
-            self.done_dict = {
-                vpn: {url: {mode: 0 for mode in daita_modes} for url in self.url2line}
-                for vpn in self.vpn_server_list
-            }
         except Exception as e:
             print(f"[ERROR] Failed to validate VPN servers: {e}")
             sys.exit(1)
@@ -253,6 +245,52 @@ class DataCollectionServer:
                 raise RuntimeError("Invalid data directory structure. Exiting.")
 
             print("[INIT] Directory structure validated.")
+
+    def _load_progress_from_current_data(self):
+        """Scan data directory and update self.done_dict with completed sample counts"""
+        data_dir = Path(self.config.get("server").get("datadir"))
+        daita = self.config["client"].get("daita", "off")
+        daita_modes = ["on", "off"] if daita == "on" else ["off"]
+
+        # Initialize done_dict[vpn][url][daita] = 0
+        self.done_dict = {
+            vpn: {
+                url: {mode: 0 for mode in daita_modes} for url in self.url2line.keys()
+            }
+            for vpn in self.vpn_server_list
+        }
+
+        line2url = {v: k for k, v in self.url2line.items()}
+        for vpn_dir in data_dir.iterdir():
+            if not vpn_dir.is_dir():
+                continue
+            vpn = vpn_dir.name
+
+            for subdir in vpn_dir.iterdir():
+                if not subdir.is_dir():
+                    continue
+
+                try:
+                    name_parts = subdir.name.split("_")
+                    if len(name_parts) != 2:
+                        continue
+
+                    site_num, daita_mode = name_parts
+                    if daita_mode not in daita_modes:
+                        continue
+
+                    site_num = int(site_num)
+                    if site_num not in line2url:
+                        # site_num not recognized, skip
+                        continue
+                    url = line2url[site_num]
+                    count = len(list(subdir.glob("*.json")))
+                    self.done_dict[vpn][url][daita_mode] = count
+
+                except Exception as e:
+                    print(f"[WARN] Skipped invalid directory '{subdir}': {e}")
+                    continue
+        print("[INIT] Loaded existing progress from files.")
 
     def _load_accounts(self):
         """Load VPN accounts from database file"""
