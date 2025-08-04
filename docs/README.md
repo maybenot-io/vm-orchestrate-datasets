@@ -8,7 +8,7 @@ In all of these collections, specific metadata about the website visits is gathe
 This metadata is tracked to assess how the VPN connection affects the 'feel' of the website visit in terms of load times.
 
 Fetching the metadata is done by passing JavaScript through selenium to run in the browser.
-To avoid the issue of cached responses for each new visit, several anti-caching flags are passed to the selenium profile and options for the browser.
+To avoid the issue of cached responses for each new visit, A couple anti-caching flags are passed to the selenium profile and options for the browser.
 Some of these flags may be (likely are) redundant, but better safe than sorry, to make sure nothing is accidentally cached and messing with the metrics:
 ```python
 from selenium import webdriver
@@ -18,22 +18,14 @@ from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
 profile = FirefoxProfile()
 profile.set_preference("browser.cache.disk.enable", False)
 profile.set_preference("privacy.clearOnShutdown.cache", True)
-profile.set_preference("privacy.clearOnShutdown.cookies", True)
-profile.set_preference("privacy.clearOnShutdown.history", True)
 ```
-A PerformanceObserver instance is used to watch for these QoE metrics in the Mullvad Browser that selenium runs, as shown below:
+These QoE metrics are fetched from the Mullvad Browser that selenium runs as shown in the JS code below:
 ```js
-const observer = new PerformanceObserver((list) => {
-    list.getEntries().forEach(entry => {
-        const type = entry.entryType;
-        window.performanceMetrics[type] = window.performanceMetrics[type] || [];
-        window.performanceMetrics[type].push(entry.toJSON());
-    });
+const metrics = {};
+["navigation", "resource", "paint", "largest-contentful-paint"].forEach(type => {
+    metrics[type] = performance.getEntriesByType(type).map(e => e.toJSON());
 });
-observer.observe({ type: 'navigation', buffered: true });
-observer.observe({ type: 'resource', buffered: true });
-observer.observe({ type: 'paint', buffered: true });
-observer.observe({ type: 'largest-contentful-paint', buffered: true });
+return metrics;
 ```
 
 ## Editing the ISO files
