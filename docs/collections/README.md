@@ -5,8 +5,4 @@ The methodology behind these collections (practical details) will also be disclo
 
 ## Ubuntu Desktop
 
-1. small_kau - A small collection to test client/server/VM combo: 5 samples per URL and server, 6 servers, 50 URL:s all under [https://kau.se/](kau.se)
-
-## Ubuntu DAITA
-
-1. TBD
+1. small_kau - DAITA: OFF - A small collection to test client/server/VM combo: 5 samples per URL and server, 6 servers, 50 URL:s all under [https://kau.se/](kau.se)
