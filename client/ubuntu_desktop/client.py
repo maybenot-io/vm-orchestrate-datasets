@@ -284,16 +284,25 @@ class DataCollectionClient:
             print("Display or browser initialization error:", e)
             return None, None
 
-    @staticmethod
-    def _get_performance_metrics(driver):
-        """Collect browser performance metrics"""
-        return driver.execute_script("""
-            const metrics = {};
-            ["navigation", "resource", "paint", "largest-contentful-paint"].forEach(type => {
-                metrics[type] = performance.getEntriesByType(type).map(e => e.toJSON());
+    def _get_performance_metrics(self, driver):
+        driver.execute_script("""
+            window.performanceMetrics = {};
+            const observer = new PerformanceObserver((list) => {
+                list.getEntries().forEach(entry => {
+                    const type = entry.entryType;
+                    window.performanceMetrics[type] = window.performanceMetrics[type] || [];
+                    window.performanceMetrics[type].push(entry.toJSON());
+                });
             });
-            return metrics;
+            observer.observe({ type: 'navigation', buffered: true });
+            observer.observe({ type: 'resource', buffered: true });
+            observer.observe({ type: 'paint', buffered: true });
+            observer.observe({ type: 'largest-contentful-paint', buffered: true });
         """)
+        # Sleep 1s to ensure the Performance Observer is given time to actually
+        # fetch the expected resources, this is due to it being ran asynchronously
+        time.sleep(1)
+        return driver.execute_script("return window.performanceMetrics || {};")
 
     def _wait_for_page_load(self, driver):
         """
@@ -304,8 +313,6 @@ class DataCollectionClient:
         min_wait = self.config.get("min_wait", 0)
         max_wait = self.config.get("max_wait", 30)
         grace = self.config.get("grace", 0)
-
-        print("waiting times: (min, max, grace)", min_wait, max_wait, grace)
 
         if min_wait < 0 or max_wait < 0 or grace < 0:
             raise ValueError("min_wait, max_wait and grace must be non-negative.")
@@ -399,7 +406,6 @@ class DataCollectionClient:
 
         # Update all state/config values from server response
         # Safe/sane defaults are used if something isn't supplied.
-        print(json.dumps(response, indent=2))
         self.config.update(
             {
                 "grace": response.get("grace", 5),
