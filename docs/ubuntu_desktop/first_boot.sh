@@ -92,7 +92,7 @@ if ! apt install mullvad-browser -y; then
 fi
 log "Successfully installed Mullvad Browser"
 
-if ! apt install python3-selenium python3-flask python3-psutil python3-requests -y; then
+if ! apt install python3-selenium python3-flask python3-psutil python3-requests python3-pyvirtualdisplay -y; then
     log "Error installing Python3 packages"
     exit 1
 fi
