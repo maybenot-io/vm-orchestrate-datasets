@@ -15,9 +15,9 @@ from PIL import Image
 from pyvirtualdisplay import Display
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver import Firefox
+from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
 from selenium.webdriver.support.wait import WebDriverWait
 
 
@@ -154,7 +154,7 @@ class DataCollectionClient:
             }
             response = self._server_request("server", params=params)
             self.state["current_server"] = response.get("vpn")
-            self.state["current_daita"] = response.get("daita")
+            self.state["daita"] = response.get("daita")
 
             self._run_mullvad_command(
                 "relay", "set", "location", self.state.get("current_server")
@@ -463,6 +463,8 @@ class DataCollectionClient:
     )
     def _rotate_vpn_server(self):
         """Request new VPN server from server, supplying current if available"""
+        # Disconnect from current connection
+        self._set_tunnel_state("disconnect")
         params = {
             "id": self.config.get("identifier"),
             "server": self.state.get("current_server", "None"),
@@ -483,6 +485,8 @@ class DataCollectionClient:
             )
             self.state["daita"] = daita_mode
 
+            # Connect to new server combination
+            self._set_tunnel_state("connect")
             self.state["current_visit_count"] = 0
 
             return True
