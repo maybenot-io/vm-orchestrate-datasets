@@ -411,7 +411,7 @@ class DataCollectionServer:
         current_daita = request.args.get("daita")
 
         if not client_id or not current_server or not current_daita:
-            return "Client ID and current server/daita combination required", 400
+            return jsonify({"error": "Client ID and current server/daita combination required"}), 400
 
         with self.lock:
             self.unique_clients.add(client_id)
@@ -447,7 +447,7 @@ class DataCollectionServer:
         requested_daita = request.args.get("daita")
 
         if not client_id or not requested_server or not requested_daita:
-            return "Required fields are missing", 400
+            return jsonify({"error":"Missing required fields"}), 400
 
         if requested_server == "None":
             print(
@@ -503,14 +503,14 @@ class DataCollectionServer:
         ]
         if any(f not in request.form for f in required_fields):
             print("[POST] Missing required fields in submission")
-            return "Missing required fields", 400
+            return jsonify({"error":"Missing required fields"}), 400
 
         try:
             png_data = bytes.fromhex(request.form["png_data"])
             pcap_data = bytes.fromhex(request.form["pcap_data"])
         except Exception as e:
             print(f"[POST] Invalid hex data: {e}")
-            return "Invalid hex data", 400
+            return jsonify({"error":"Invalid hex dataa"}), 400
 
         client_id = request.form["id"]
         url = request.form["url"]
@@ -529,10 +529,10 @@ class DataCollectionServer:
 
         if pcap_size < 10 * 1024 or pcap_size > 3000 * 1024:
             print(f"[POST] Rejected: PCAP size {pcap_size} out of bounds")
-            return "PCAP size invalid", 200
+            return jsonify({"error":"PCAP size invalid"}), 200
         if png_size < 10 * 1024:
             print(f"[POST] Rejected: PNG too small ({png_size} bytes)")
-            return "PNG size invalid", 200
+            return jsonify({"error":"PNG size invalid"}), 200
 
         with self.lock:
             # Check if already completed for this (vpn, url, daita)
@@ -543,7 +543,7 @@ class DataCollectionServer:
                     f"[POST] Rejected: Already completed {current_count} samples "
                     f"for {url} via {vpn} with daita={daita}"
                 )
-                return "Already completed", 200
+                return jsonify({"error":f"URL already has maximum of {max_samples} samaples"}), 200
 
             # Determine where to save
             site_num = self.url2line[url]
@@ -560,7 +560,7 @@ class DataCollectionServer:
                 print(f"[POST] Saved sample #{sample_num} to {base_path}")
             except Exception as e:
                 print(f"[ERROR] Failed to save files: {e}")
-                return "Failed to save data", 500
+                return jsonify({"error":"Failed to save the data"}), 500
 
             # Update sample count
             self.done_dict[vpn][url][daita] = current_count + 1
