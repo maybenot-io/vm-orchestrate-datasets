@@ -390,6 +390,9 @@ class DataCollectionClient:
                 response = self.config.get("session").get(url, params=params)
             else:
                 response = self.config.get("session").post(url, data=data)
+            # 409 status code: Current server/DAITA combination is finished, need to rotate.
+            if response.status_code == 409:
+                self._rotate_vpn_server()
             response.raise_for_status()
             return response.json() if response.content else {}
         except requests.exceptions.HTTPError as e:
@@ -424,6 +427,13 @@ class DataCollectionClient:
         )
         return account
 
+    @retry_with_backoff(
+        attempts=5,
+        base_delay=1,
+        max_delay=30,
+        jitter=0.3,
+        exceptions=(requests.RequestException,),
+    )
     def _get_next_task(self):
         """Get next URL to visit from server"""
         params = {

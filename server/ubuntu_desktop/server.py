@@ -453,7 +453,7 @@ class DataCollectionServer:
             print(
                 f"[CLIENT] 'None' server supplied from {client_id} - should setup for new"
             )
-            return jsonify({"error": "None supplied as server - go fetch new"}), 400
+            return jsonify({"error": "None supplied as server - go fetch new"}), 409
 
         with self.lock:
             self.unique_clients.add(client_id)
@@ -467,7 +467,7 @@ class DataCollectionServer:
                     f"[CLIENT] No work available for {client_id}",
                     f"(vpn={requested_server}, daita={requested_daita})",
                 )
-                return jsonify({"error": "No work available for this combination"}), 400
+                return jsonify({"error": "No work available for this combination"}), 409
 
             assignment = random.choice(visits)
             print(
