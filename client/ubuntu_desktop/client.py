@@ -150,7 +150,7 @@ class DataCollectionClient:
             params = {
                 "id": self.config.get("identifier"),
                 "server": "None",
-                "daita": self.state.get("daita"),
+                "daita": self.state.get("daita", "off"),
             }
             response = self._server_request("server", params=params)
             self.state["current_server"] = response.get("vpn")
