@@ -16,6 +16,10 @@ from flask import Flask, jsonify, request
 
 
 class DataCollectionServer:
+    MIN_PCAP_SIZE = 10 * 1024  # 10 KiB
+    MAX_PCAP_SIZE = 3000 * 1024  # 3 MiB
+    MIN_PNG_SIZE = 10 * 1024  # 10 KiB
+
     def __init__(self, config_path="env/config.json"):
         """
         Initialize the data collection server
@@ -51,70 +55,72 @@ class DataCollectionServer:
         try:
             with open(config_path) as f:
                 config = json.load(f)
-
-            # Verify all required server configurations exist
-            required_server = ["datadir", "urllist", "vpnlist", "database"]
-            for key in required_server:
-                if key not in config.get("server", {}):
-                    raise ValueError(f"Missing required server config: {key}")
-                # Validate file paths exist (except datadir which we'll create)
-                if key != "datadir" and not Path(config["server"][key]).exists():
-                    raise FileNotFoundError(
-                        f"Config path does not exist: {config['server'][key]}"
-                    )
-
-            # Set default values if not specified
-            config.setdefault(
-                "server",
-                {
-                    "samples": 5,  # Default number of samples per URL
-                    "visits": 10,  # Default number of visits per VPN connection
-                    "host": "192.168.100.1",  # Default server host
-                    "port": 5000,  # Default server port
-                },
-            )
-            config.setdefault(
-                "timing",
-                {
-                    "grace": 5,  # Additional wait time after page load
-                    "min_wait": 20,  # Minimum time to spend on each page
-                    "max_wait": 30,  # Maximum time to spend on each page
-                    "post_browser_pre_capture_wait": 5,  # Grace after starting browser, before starting capture
-                    "post_packet_pre_visit_wait": 5,  # Grace after starting capture, before performing visit
-                },
-            )
-            config.setdefault(
-                "client",
-                {
-                    "display_size": [
-                        1920,
-                        1080,
-                    ],  # Default display size for headless browser
-                    "fullscreen": True,  # Default to fullscreen mode
-                    "daita": "off",  # Default to not using DAITA if not set
-                },
-            )
-
+            self._validate_config(config)
+            self._set_config_defaults(config)
             return config
         except Exception as e:
             print(f"[ERROR] Config loading failed: {e}")
             sys.exit(1)
 
+    def _validate_config(self, config: dict) -> None:
+        """Verify all required server configurations exist"""
+        required_server = ["datadir", "urllist", "vpnlist", "database"]
+        for key in required_server:
+            if key not in config.get("server", {}):
+                raise ValueError(f"Missing required server config: {key}")
+            # Validate file paths exist (except datadir which we'll create)
+            if key != "datadir" and not Path(config["server"][key]).exists():
+                raise FileNotFoundError(
+                    f"Config path does not exist: {config['server'][key]}"
+                )
+
+    def _set_config_defaults(self, config: dict) -> None:
+        config.setdefault(
+            "server",
+            {
+                "samples": 5,  # Default number of samples per URL
+                "visits": 10,  # Default number of visits per VPN connection
+                "host": "192.168.100.1",  # Default server host
+                "port": 5000,  # Default server port
+            },
+        )
+        config.setdefault(
+            "timing",
+            {
+                "grace": 5,  # Additional wait time after page load
+                "min_wait": 20,  # Minimum time to spend on each page
+                "max_wait": 30,  # Maximum time to spend on each page
+                "post_browser_pre_capture_wait": 5,  # Grace after starting browser, before starting capture
+                "post_packet_pre_visit_wait": 5,  # Grace after starting capture, before performing visit
+            },
+        )
+        config.setdefault(
+            "client",
+            {
+                "display_size": [
+                    1920,
+                    1080,
+                ],  # Default FHD display size for headless browser
+                "fullscreen": True,  # Default fullscreen mode
+                "daita": "off",  # Default off
+            },
+        )
+
     def _initialize_state(self):
         """Initialize all server state variables and data structures"""
-        self.accounts = []  # Available VPN accounts
-        self.allocated_accounts = {}  # Accounts assigned to clients
-        self.vpn_server_list = []  # List of available VPN servers
-        self.done_dict = {}  # Tracks completed samples per VPN/URL/DAITA combo
-        self.pending_visits = []  # Work still needing completion
-        self.url2line = {}  # Maps URLs to line numbers in urllist
+        self.accounts = list()  # Available VPN accounts
+        self.allocated_accounts = dict()  # Accounts assigned to clients
+        self.servers = list()  # Server keys for each VPN/daita combination
+        self.done_dict = dict()  # Tracks completed samples per visit combination
+        self.pending_visits = set()  # Work still needing completion
+        self.url2line = dict()  # Maps URLs to line numbers in urllist
         self.unique_clients = set()  # Tracks connected client IDs
         self.starting_time = time.time()  # Server start timestamp
         self.last_update_time = self.starting_time  # Last data update timestamp
 
         # Load all required data files and initialize structures
         self._load_urls()  # Load URL list to visit
-        self._load_vpn_servers()  # Load VPN server list
+        self._init_vpn_servers()  # Load VPN servers and create server list
         self._init_data_directory()  # Set up data directory structure
         self._load_progress_from_current_data()  # Load current progress, if any
         self._load_accounts()  # Load VPN accounts
@@ -163,7 +169,15 @@ class DataCollectionServer:
             "</pre>"
         )
 
-    def _load_urls(self):
+    def _get_base_server(self, server_name: str) -> str:
+        """Extract base VPN server name (remove _daita suffix if present)"""
+        return server_name.removesuffix("_daita")
+
+    def _get_daita_mode(self, server_name: str) -> str:
+        """Extract DAITA mode from server name"""
+        return "on" if server_name.endswith("_daita") else "off"
+
+    def _load_urls(self) -> None:
         """Load and validate URLs from config file"""
         with open(self.config["server"]["urllist"]) as f:
             urls = [line.strip() for line in f if line.strip()]
@@ -179,120 +193,86 @@ class DataCollectionServer:
 
         self.url2line = {url: i for i, url in enumerate(urls)}
 
-    def _load_vpn_servers(self):
-        """Load and validate VPN servers from config file"""
+    def _init_vpn_servers(self) -> None:
+        """Load and validate VPN servers from config file, create server list with DAITA variants"""
         with open(self.config["server"]["vpnlist"]) as f:
-            vpns = [line.strip() for line in f if line.strip()]
+            base_servers = [line.strip() for line in f if line.strip()]
 
         try:
             mullvad_servers = requests.get(
                 "https://api.mullvad.net/app/v1/relays"
             ).json()["wireguard"]["relays"]
             invalid = [
-                v for v in vpns if not any(s["hostname"] == v for s in mullvad_servers)
+                v for v in base_servers if not any(s["hostname"] == v for s in mullvad_servers)
             ]
 
             if invalid:
                 print(f"[ERROR] Invalid servers: {', '.join(invalid)}")
                 sys.exit(1)
-            self.vpn_server_list = vpns
+            
+            daita_modes = self.config["client"].get("daita", ["off"])
+            for vpn_server in base_servers:
+                for mode in daita_modes:
+                    if mode == "on":
+                        self.servers.append(f"{vpn_server}_daita")
+                    else:
+                        self.servers.append(vpn_server)
+            
+            print(f"[INIT] Created {len(self.servers)} server configurations from {len(base_servers)} base servers with DAITA modes: {daita_modes}")
+                        
         except Exception as e:
             print(f"[ERROR] Failed to validate VPN servers: {e}")
             sys.exit(1)
 
-    def _init_data_directory(self):
+    def _init_data_directory(self) -> None:
         """Initialize data directory structure"""
         datadir = Path(self.config["server"]["datadir"])
-        daita_modes = (
-            ["on", "off"]
-            if self.config["client"].get("daita", "off") == "on"
-            else ["off"]
-        )
 
         if not datadir.exists():
-            # Create fresh directory structure
             print(f"[INIT] Creating new data directory at {datadir}")
-            datadir.mkdir()
-
-            # Create subdirectories for each VPN server, URL and/or DAITA combination
-            for vpn in self.vpn_server_list:
-                vpn_dir = datadir / vpn
-                vpn_dir.mkdir()
-                for url in self.url2line:
-                    site_num = self.url2line[url]
-                    for daita in daita_modes:
-                        path = vpn_dir / f"{site_num}_{daita}"
-                        path.mkdir(parents=True)
+            datadir.mkdir(parents=True)
         else:
             print(f"[INIT] Using existing data directory at {datadir}")
-            missing, unexpected = [], []
 
-            for vpn in self.vpn_server_list:
-                vpn_dir = datadir / vpn
-                if not vpn_dir.exists():
-                    missing.append(str(vpn_dir))
-                    continue
-                for url, site_num in self.url2line.items():
-                    for mode in daita_modes:
-                        if not (vpn_dir / f"{site_num}_{mode}").exists():
-                            missing.append(f"{vpn}/{site_num}_{mode}")
-                    if daita_modes == ["off"] and (vpn_dir / f"{site_num}_on").exists():
-                        unexpected.append(f"{vpn}/{site_num}_on")
+        # Create server directories and URL subdirectories
+        for server_name in self.servers:
+            server_dir = datadir / server_name
 
-            if missing or unexpected:
-                print(" Missing:", ", ".join(missing))
-                print(" Unexpected:", ", ".join(unexpected))
-                raise RuntimeError("Invalid data directory structure. Exiting.")
+            if not server_dir.exists():
+                server_dir.mkdir(parents=True)
 
-            print("[INIT] Directory structure validated.")
+            for site_num in self.url2line.values():
+                site_dir = server_dir / str(site_num)
+                if not site_dir.exists():
+                    site_dir.mkdir(parents=True)
 
-    def _load_progress_from_current_data(self):
-        """Scan data directory and update self.done_dict with completed sample counts"""
-        data_dir = Path(self.config.get("server").get("datadir"))
-        daita = self.config["client"].get("daita", "off")
-        daita_modes = ["on", "off"] if daita == "on" else ["off"]
-
-        # Initialize done_dict[vpn][url][daita] = 0
+    def _load_progress_from_current_data(self) -> None:
+        """Load progress from existing directory structure"""
+        # Initialize done_dict
         self.done_dict = {
-            vpn: {
-                url: {mode: 0 for mode in daita_modes} for url in self.url2line.keys()
-            }
-            for vpn in self.vpn_server_list
+            server_name: {url: 0 for url in self.url2line.keys()}
+            for server_name in self.servers
         }
 
+        data_dir = Path(self.config["server"]["datadir"])
         line2url = {v: k for k, v in self.url2line.items()}
-        for vpn_dir in data_dir.iterdir():
-            if not vpn_dir.is_dir():
+
+        # Scan all server directories
+        for server_dir in data_dir.iterdir():
+            server_name = server_dir.name
+            if server_name not in self.servers:
+                print(f"[WARNING] Skipping unknown server directory: {server_name}")
                 continue
-            vpn = vpn_dir.name
+            # Scan site subdirectories
+            for site_dir in server_dir.iterdir():
+                site_num = int(site_dir.name)
+                url = line2url[site_num]
+                # Count PCAP files (samples)
+                count = len(list(site_dir.glob("*.pcap")))
+                self.done_dict[server_name][url] = count
+        print("[INIT] Loaded existing progress from directory structure")
 
-            for subdir in vpn_dir.iterdir():
-                if not subdir.is_dir():
-                    continue
-
-                try:
-                    name_parts = subdir.name.split("_")
-                    if len(name_parts) != 2:
-                        continue
-
-                    site_num, daita_mode = name_parts
-                    if daita_mode not in daita_modes:
-                        continue
-
-                    site_num = int(site_num)
-                    if site_num not in line2url:
-                        # site_num not recognized, skip
-                        continue
-                    url = line2url[site_num]
-                    count = len(list(subdir.glob("*.json")))
-                    self.done_dict[vpn][url][daita_mode] = count
-
-                except Exception as e:
-                    print(f"[WARN] Skipped invalid directory '{subdir}': {e}")
-                    continue
-        print("[INIT] Loaded existing progress from files.")
-
-    def _load_accounts(self):
+    def _load_accounts(self) -> None:
         """Load VPN accounts from database file"""
         try:
             with open(self.config["server"]["database"]) as f:
@@ -305,19 +285,35 @@ class DataCollectionServer:
             print(f"[ERROR] Failed to load accounts: {e}")
             sys.exit(1)
 
-    def _init_visit_list(self):
-        """Initialize pending visits tracking"""
-        daita = self.config["client"].get("daita", "off")
-        daita_modes = ["on", "off"] if daita == "on" else ["off"]
-        self.pending_visits = [
-            {"url": url, "vpn": vpn, "daita": daita_mode}
-            for vpn in self.done_dict
-            for url in self.done_dict[vpn]
-            for daita_mode in daita_modes
-            if self.done_dict[vpn][url][daita_mode]
-            < self.config["server"].get("samples", 100)
-        ]
+    def _init_visit_list(self) -> None:
+        """Initialize pending visits based on current progress"""
+        max_samples = self.config["server"].get("samples", 100)
+
+        self.pending_visits = {
+            (server_name, url)
+            for server_name in self.done_dict
+            for url in self.done_dict[server_name]
+            if self.done_dict[server_name][url] < max_samples
+        }
+
         print(f"[INIT] Initialized with {len(self.pending_visits)} combinations left")
+
+    def _get_client_config(self):
+        """Get client configuration as dictionary"""
+        return {
+            "visit_count": self.config["server"].get("visits", 10),
+            "grace": self.config["timing"].get("grace", 1),
+            "min_wait": self.config["timing"].get("min_wait", 2),
+            "max_wait": self.config["timing"].get("max_wait", 30),
+            "display_size": self.config["server"].get("display_size", [1920, 1080]),
+            "fullscreen": self.config["server"].get("fullscreen", True),
+            "post_browser_pre_capture_wait": self.config.get(
+                "post_browser_pre_capture_wait", 5
+            ),
+            "post_packet_pre_visit_wait": self.config.get(
+                "post_packet_pre_visit_wait", 5
+            ),
+        }
 
     def setup_client(self):
         """
@@ -344,26 +340,9 @@ class DataCollectionServer:
                 except IndexError:
                     print(f"[ERROR] No accounts available for {id}")
                     return jsonify({"error": "No available accounts"}), 400
-
-            return jsonify(
-                {
-                    "account": account,
-                    "visit_count": self.config["server"].get("visits", 10),
-                    "grace": self.config["timing"].get("grace", 1),
-                    "min_wait": self.config["timing"].get("min_wait", 2),
-                    "max_wait": self.config["timing"].get("max_wait", 30),
-                    "display_size": self.config["server"].get(
-                        "display_size", [1920, 1080]
-                    ),
-                    "fullscreen": self.config["server"].get("fullscreen", True),
-                    "post_browser_pre_capture_wait": self.config.get(
-                        "post_browser_pre_capture_wait", 5
-                    ),
-                    "post_packet_pre_visit_wait": self.config.get(
-                        "post_packet_pre_visit_wait", 5
-                    ),
-                }
-            )
+            response = {"account": account}
+            response.update(self._get_client_config())
+            return jsonify(response)
 
     def get_status(self):
         """
@@ -373,116 +352,102 @@ class DataCollectionServer:
             JSON: Server status including collection progress
         """
         with self.lock:
-            # Calculate total collected samples (across all daita modes)
+            # Calculate total collected samples
             total_collected = sum(
-                sum(mode_count for mode_count in url_dict.values())
-                for vpn_dict in self.done_dict.values()
-                for url_dict in vpn_dict.values()
+                count
+                for server_dict in self.done_dict.values()
+                for count in server_dict.values()
             )
-
-            daita = self.config["client"].get("daita", "off")
-            daita_multiplier = 2 if daita == "on" else 1
 
             return jsonify(
                 {
-                    "total_to_collect": self.config["server"].get("samples", 100)
-                    * len(self.url2line)
-                    * len(self.vpn_server_list)
-                    * daita_multiplier,
+                    "total_to_collect": (
+                        self.config["server"].get("samples", 100)
+                        * len(self.url2line)
+                        * len(self.servers)
+                    ),
                     "total_collected": total_collected,
                     "elapsed": time.time() - self.starting_time,
                     "last_update": time.time() - self.last_update_time,
                     "unique_clients": list(self.unique_clients),
-                    "allocated_accounts": f"{len(self.allocated_accounts)}/{len(self.accounts)}",
+                    "allocated_accounts": f"{len(self.allocated_accounts)}/{len(self.accounts) + len(self.allocated_accounts)}",
                 }
             )
 
     def get_vpn_server(self):
         """
         Endpoint to get VPN server assignment
-        Returns a VPN server + DAITA combination different
-        from the client's current one if possible
+        Returns a VPN server different from current one if possible
 
         Returns:
-            JSON: VPN server hostname and daita mode, or error message
+            JSON: VPN server, or error message
         """
         client_id = request.args.get("id")
         current_server = request.args.get("server")
-        current_daita = request.args.get("daita")
 
-        if not client_id or not current_server or not current_daita:
-            return jsonify({"error": "Client ID and current server/daita combination required"}), 400
+        if not client_id or not current_server:
+            return jsonify({"error": "Client ID and current server required"}), 400
+
+        current_server = (
+            f"{current_server}_daita"
+            if request.args.get("daita", "off")
+            else current_server
+        )
 
         with self.lock:
             self.unique_clients.add(client_id)
+            # Get available servers with pending work
+            available_servers = {
+                server_name for server_name, url in self.pending_visits
+            }
 
-            # Build set of available (vpn, daita) pairs with pending work
-            available = {(v["vpn"], v["daita"]) for v in self.pending_visits}
+            # Avoid current server if possible, but don't remove if it's the only one available
+            if len(available_servers) > 1 and current_server in available_servers:
+                available_servers.remove(current_server)
 
-            # Remove current server+daita tuple if present and if there is more than one option
-            current = (current_server, current_daita)
-            if len(available) > 1 and current in available:
-                available.remove(current)
+            if not available_servers:
+                return jsonify({"error": "No servers available"}), 400
 
-            if not available:
-                print(f"[CLIENT] No VPN servers available for {client_id}")
-                return jsonify({"error": "No VPN servers available"}), 400
+            assigned_server = random.choice(list(available_servers))
+            base_server = self._get_base_server(assigned_server)
+            daita = self._get_daita_mode(assigned_server)
 
-            assigned_server = random.choice(list(available))
-            print(f"[CLIENT] Assigned VPN server {assigned_server} to {client_id}")
-
-            response_obj = {"vpn": assigned_server[0], "daita": assigned_server[1]}
-            return jsonify(response_obj)
+            return jsonify({"vpn": base_server, "daita": daita})
 
     def get_work(self):
         """
         Endpoint to get work assignment
-        Returns a URL to visit with the specified VPN server and DAITA mode
+        Returns a URL to visit with the specified VPN server
 
         Returns:
             JSON: Work assignment (URL + VPN + DAITA) or error message
         """
         client_id = request.args.get("id")
-        requested_server = request.args.get("server")
-        requested_daita = request.args.get("daita")
+        vpn = request.args.get("server")
+        daita = request.args.get("daita", "off")
 
-        if not client_id or not requested_server or not requested_daita:
-            return jsonify({"error":"Missing required fields"}), 400
+        if not all([client_id, vpn]):
+            return jsonify({"error": "Missing required fields"}), 400
 
-        if requested_server == "None":
-            print(
-                f"[CLIENT] 'None' server supplied from {client_id} - should setup for new"
-            )
+        if vpn == "None":
             return jsonify({"error": "None supplied as server - go fetch new"}), 409
+
+        server_name = f"{vpn}_daita" if daita == "on" else vpn
 
         with self.lock:
             self.unique_clients.add(client_id)
-            visits = self.pending_visits
 
-            visits = [v for v in visits if v["vpn"] == requested_server]
-            visits = [v for v in visits if v.get("daita") == requested_daita]
+            # Find available work for this server
+            available_urls = [
+                url for server, url in self.pending_visits if server == server_name
+            ]
 
-            if not visits:
-                print(
-                    f"[CLIENT] No work available for {client_id}",
-                    f"(vpn={requested_server}, daita={requested_daita})",
-                )
-                return jsonify({"error": "No work available for this combination"}), 409
+            if not available_urls:
+                return jsonify({"error": "No work available for this server"}), 409
 
-            assignment = random.choice(visits)
-            print(
-                f"[CLIENT] Assigned work to {client_id}: {assignment['url']}",
-                f"via {assignment['vpn']} with daita {assignment.get('daita')}",
-            )
+            assigned_url = random.choice(available_urls)
 
-            # Return only the needed keys explicitly
-            return jsonify(
-                {
-                    "url": assignment.get("url"),
-                    "vpn": assignment.get("vpn"),
-                    "daita": assignment.get("daita"),
-                }
-            )
+            return jsonify({"url": assigned_url, "vpn": vpn, "daita": daita})
 
     def post_work(self):
         """
@@ -503,54 +468,57 @@ class DataCollectionServer:
         ]
         if any(f not in request.form for f in required_fields):
             print("[POST] Missing required fields in submission")
-            return jsonify({"error":"Missing required fields"}), 400
+            return jsonify({"error": "Missing required fields"}), 400
 
         try:
             png_data = bytes.fromhex(request.form["png_data"])
             pcap_data = bytes.fromhex(request.form["pcap_data"])
         except Exception as e:
             print(f"[POST] Invalid hex data: {e}")
-            return jsonify({"error":"Invalid hex dataa"}), 400
+            return jsonify({"error": "Invalid hex data"}), 400
 
         client_id = request.form["id"]
         url = request.form["url"]
         vpn = request.form["vpn"]
         daita = request.form["daita"]
 
+        server_name = f"{vpn}_daita" if daita == "on" else vpn
+
         png_size = len(png_data)
         pcap_size = len(pcap_data)
 
         print(f"\n[POST] Received work from {client_id}:")
         print(f"  URL: {url}")
-        print(f"  VPN: {vpn}")
-        print(f"  DAITA: {daita}")
+        print(f"  Server: {server_name}")
         print(f"  PNG size: {png_size:,} bytes ({png_size / 1024:.1f} KiB)")
         print(f"  PCAP size: {pcap_size:,} bytes ({pcap_size / 1024:.1f} KiB)")
 
-        if pcap_size < 10 * 1024 or pcap_size > 3000 * 1024:
-            print(f"[POST] Rejected: PCAP size {pcap_size} out of bounds")
-            return jsonify({"error":"PCAP size invalid"}), 200
-        if png_size < 10 * 1024:
-            print(f"[POST] Rejected: PNG too small ({png_size} bytes)")
-            return jsonify({"error":"PNG size invalid"}), 200
+        data_is_valid, msg = self._validate_submitted_data(png_data, pcap_data)
+        if not data_is_valid:
+            print(f"[POST] Rejected: {msg}")
+            return jsonify({"error": msg}), 200
 
         with self.lock:
-            # Check if already completed for this (vpn, url, daita)
-            current_count = self.done_dict[vpn][url].get(daita, 0)
+            # Check if already done with current combination
+            current_count = self.done_dict[server_name][url]
             max_samples = self.config["server"].get("samples", 100)
             if current_count >= max_samples:
                 print(
-                    f"[POST] Rejected: Already completed {current_count} samples "
-                    f"for {url} via {vpn} with daita={daita}"
+                    f"[POST] Rejected: Already completed {current_count} samples",
+                    f"for {url} via {server_name}",
                 )
-                return jsonify({"error":f"URL already has maximum of {max_samples} samaples"}), 200
+                return jsonify(
+                    {"error": f"URL already has maximum of {max_samples} samples"}
+                ), 200
 
             # Determine where to save
             site_num = self.url2line[url]
             base_dir = (
-                Path(self.config["server"]["datadir"]) / vpn / f"{site_num}_{daita}"
+                Path(self.config["server"]["datadir"]) / server_name / str(site_num)
             )
-            sample_num = self._get_free_sample_num(vpn, daita, site_num)
+
+            # Get next sample number
+            sample_num = self._get_free_sample_num(server_name, url)
             base_path = base_dir / str(sample_num)
 
             try:
@@ -560,19 +528,15 @@ class DataCollectionServer:
                 print(f"[POST] Saved sample #{sample_num} to {base_path}")
             except Exception as e:
                 print(f"[ERROR] Failed to save files: {e}")
-                return jsonify({"error":"Failed to save the data"}), 500
+                return jsonify({"error": "Failed to save the data"}), 500
 
             # Update sample count
-            self.done_dict[vpn][url][daita] = current_count + 1
+            self.done_dict[server_name][url] = current_count + 1
 
             # Remove from pending if needed
-            if self.done_dict[vpn][url][daita] >= max_samples:
-                visit = {"url": url, "vpn": vpn, "daita": daita}
-                if visit in self.pending_visits:
-                    self.pending_visits.remove(visit)
-                    print(
-                        f"[POST] Completed all samples for {url} via {vpn} (daita={daita})"
-                    )
+            if self.done_dict[server_name][url] >= max_samples:
+                self.pending_visits.discard((server_name, url))
+                print(f"[POST] Completed all samples for {url} via {server_name}")
 
             self.last_update_time = time.time()
 
@@ -580,22 +544,38 @@ class DataCollectionServer:
         return jsonify(
             {
                 "status": "OK",
-                "message": f"Saved sample #{sample_num} for {url} via {vpn} (daita={daita})",
+                "message": f"Saved sample #{sample_num} for {url} via {server_name}",
             }
         ), 200
 
-    def _get_free_sample_num(self, vpn, daita, site_num):
+    def _validate_submitted_data(self, png_data: bytes, pcap_data: bytes):
+        png_size = len(png_data)
+        pcap_size = len(pcap_data)
+
+        if pcap_size < self.MIN_PCAP_SIZE or pcap_size > self.MAX_PCAP_SIZE:
+            return False, f"PCAP size {pcap_size} out of bounds"
+
+        if png_size < self.MIN_PNG_SIZE:
+            return False, f"PNG too small ({png_size} bytes)"
+
+        return True, None
+
+    def _get_free_sample_num(self, server_name: str, url: str):
         """
-        Find next available sample number for a site
+        Find next available sample number for a server/URL combination
 
         Args:
-            vpn (str): VPN server name
-            site_num (int): Site line number
+            server_name (str): Server name (directory name)
+            url (str): URL being sampled
 
         Returns:
             int: Next available sample number
         """
-        dir_path = Path(self.config["server"]["datadir"]) / vpn / f"{site_num}_{daita}"
+        dir_path = (
+            Path(self.config["server"]["datadir"])
+            / server_name
+            / str(self.url2line[url])
+        )
 
         # Get all existing sample numbers
         existing = [int(f.stem) for f in dir_path.glob("*") if f.stem.isdigit()]
@@ -634,7 +614,7 @@ class DataCollectionServer:
             }s"
         )
 
-        self.app.run(host=host, port=port, debug=False)
+        self.app.run(host=host, port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
