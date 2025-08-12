@@ -16,10 +16,6 @@ from flask import Flask, jsonify, request
 
 
 class DataCollectionServer:
-    MIN_PCAP_SIZE = 10 * 1024  # 10 KiB
-    MAX_PCAP_SIZE = 3000 * 1024  # 3 MiB
-    MIN_PNG_SIZE = 10 * 1024  # 10 KiB
-
     def __init__(self, config_path="env/config.json"):
         """
         Initialize the data collection server
@@ -75,36 +71,45 @@ class DataCollectionServer:
                 )
 
     def _set_config_defaults(self, config: dict) -> None:
-        config.setdefault(
-            "server",
-            {
-                "samples": 5,  # Default number of samples per URL
-                "visits": 10,  # Default number of visits per VPN connection
-                "host": "192.168.100.1",  # Default server host
-                "port": 5000,  # Default server port
-            },
-        )
-        config.setdefault(
-            "timing",
-            {
-                "grace": 5,  # Additional wait time after page load
-                "min_wait": 20,  # Minimum time to spend on each page
-                "max_wait": 30,  # Maximum time to spend on each page
-                "post_browser_pre_capture_wait": 5,  # Grace after starting browser, before starting capture
-                "post_packet_pre_visit_wait": 5,  # Grace after starting capture, before performing visit
-            },
-        )
-        config.setdefault(
-            "client",
-            {
-                "display_size": [
-                    1920,
-                    1080,
-                ],  # Default FHD display size for headless browser
-                "fullscreen": True,  # Default fullscreen mode
-                "daita": "off",  # Default off
-            },
-        )
+        """Set safe/sane defaults for any missing configuration keys"""
+        server_defaults = {
+            "samples": 5,  # Default number of samples per URL
+            "visits": 10,  # Default number of visits per VPN connection
+            "host": "192.168.100.1",  # Default server host
+            "port": 5000,  # Default server port
+            "MIN_PCAP_SIZE": 10,  # Default minimum PCAP size, in KiB
+            "MAX_PCAP_SIZE": 3000,  # Default maximum PCAP size, in KiB
+            "MIN_PNG_SIZE": 10,  # Default minimum PNG size, in KiB
+        }
+        timing_defaults = {
+            "grace": 5,  # Additional wait time after page load
+            "min_wait": 20,  # Minimum time to spend on each page
+            "max_wait": 30,  # Maximum time to spend on each page
+            "post_browser_pre_capture_wait": 5,  # Grace after starting browser, before starting capture
+            "post_packet_pre_visit_wait": 5,  # Grace after starting capture, before performing visit
+        }
+        client_defaults = {
+            "display_size": [1920, 1080],  # Default FHD display size for browser
+            "fullscreen": True,  # Default fullscreen mode
+            "daita": ["off"],  # Default off
+        }
+
+        # Ensure sections exist
+        config.setdefault("server", {})
+        config.setdefault("timing", {})
+        config.setdefault("client", {})
+
+        # Fill only missing keys
+        for k, v in server_defaults.items():
+            config["server"].setdefault(k, v)
+        for k, v in timing_defaults.items():
+            config["timing"].setdefault(k, v)
+        for k, v in client_defaults.items():
+            config["client"].setdefault(k, v)
+
+        # Convert pcap/png size keys from kilobytes to bytes
+        for key in ("MIN_PCAP_SIZE", "MAX_PCAP_SIZE", "MIN_PNG_SIZE"):
+            config["server"][key] *= 1024
 
     def _initialize_state(self):
         """Initialize all server state variables and data structures"""
@@ -203,13 +208,15 @@ class DataCollectionServer:
                 "https://api.mullvad.net/app/v1/relays"
             ).json()["wireguard"]["relays"]
             invalid = [
-                v for v in base_servers if not any(s["hostname"] == v for s in mullvad_servers)
+                v
+                for v in base_servers
+                if not any(s["hostname"] == v for s in mullvad_servers)
             ]
 
             if invalid:
                 print(f"[ERROR] Invalid servers: {', '.join(invalid)}")
                 sys.exit(1)
-            
+
             daita_modes = self.config["client"].get("daita", ["off"])
             for vpn_server in base_servers:
                 for mode in daita_modes:
@@ -217,9 +224,11 @@ class DataCollectionServer:
                         self.servers.append(f"{vpn_server}_daita")
                     else:
                         self.servers.append(vpn_server)
-            
-            print(f"[INIT] Created {len(self.servers)} server configurations from {len(base_servers)} base servers with DAITA modes: {daita_modes}")
-                        
+
+            print(
+                f"[INIT] Created {len(self.servers)} server configurations from {len(base_servers)} base servers with DAITA modes: {daita_modes}"
+            )
+
         except Exception as e:
             print(f"[ERROR] Failed to validate VPN servers: {e}")
             sys.exit(1)
@@ -552,10 +561,14 @@ class DataCollectionServer:
         png_size = len(png_data)
         pcap_size = len(pcap_data)
 
-        if pcap_size < self.MIN_PCAP_SIZE or pcap_size > self.MAX_PCAP_SIZE:
+        if not (
+            self.config["server"]["MIN_PCAP_SIZE"]
+            <= pcap_size
+            <= self.config["server"]["MAX_PCAP_SIZE"]
+        ):
             return False, f"PCAP size {pcap_size} out of bounds"
 
-        if png_size < self.MIN_PNG_SIZE:
+        if png_size < self.config["server"]["MIN_PNG_SIZE"]:
             return False, f"PNG too small ({png_size} bytes)"
 
         return True, None
