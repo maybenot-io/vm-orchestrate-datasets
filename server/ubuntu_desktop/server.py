@@ -399,7 +399,7 @@ class DataCollectionServer:
 
         current_server = (
             f"{current_server}_daita"
-            if request.args.get("daita", "off")
+            if request.args.get("daita", "off") == "on"
             else current_server
         )
 
