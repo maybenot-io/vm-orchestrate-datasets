@@ -584,6 +584,7 @@ class DataCollectionServer:
         Returns:
             int: Next available sample number
         """
+        max_samples = self.config["server"].get("samples", 100)
         dir_path = (
             Path(self.config["server"]["datadir"])
             / server_name
@@ -591,10 +592,11 @@ class DataCollectionServer:
         )
 
         # Get all existing sample numbers
-        existing = [int(f.stem) for f in dir_path.glob("*") if f.stem.isdigit()]
+        existing = {int(f.stem) for f in dir_path.glob("*.pcap")}
+        available = set(range(max_samples)) - existing
 
-        # Return next available number
-        return max(existing) + 1 if existing else 0
+        # Return smallest available number
+        return min(available)
 
     def run(self):
         """
