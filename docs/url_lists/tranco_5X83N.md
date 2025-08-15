@@ -33,11 +33,11 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 23.     ln-msedge.net ❌ Microsoft CDN/edge
 24.     azure.com ✅ Redirects to azure.microsoft.com, selected 10 random articles
 25.     amazon.com ✅ Redirects to www.amazon.com, included despite slight difficulty finding static content links
-26.     googletagmanager.com ❌ Google Analytics/Tag API  
-27.     googlevideo.com ❌ YouTube video CDN  
-28.     a-msedge.net ❌ Microsoft CDN/edge server  
-29.     windowsupdate.com ❌ Windows update service endpoint  
-30.     akadns.net ❌ Akamai DNS service  
+26.     googletagmanager.com ❌ Google Analytics/Tag API
+27.     googlevideo.com ❌ YouTube video CDN
+28.     a-msedge.net ❌ Microsoft CDN/edge server
+29.     windowsupdate.com ❌ Windows update service endpoint
+30.     akadns.net ❌ Akamai DNS service
 31.     e2ro.com ❌ Tracking/analytics
 32.     wikipedia.org ✅ 301 redirect to en.wikipedia.org, selected 10 random articles with at least 1 image each
 33.     doubleclick.net ❌ Blocked by Mullvad Browser, skipping
@@ -57,7 +57,7 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 47.     wordpress.org ❌ 429 Too Many Requests errors frequently when using Mullvad VPN 
 48.     icloud.com ❌ Nearly all links redirect to the same JavaScript-based login/signup page
 49.     youtu.be ❌ 301 redirect to Youtube.com which is already included
-50.     aaplimg.com ❌ Apple CDN  
+50.     aaplimg.com ❌ Apple CDN
 51.     pinterest.com ❌ Difficult to find static content, NoScript extension shows constant XSS warnings
 52.     googlesyndication.com ❌ 301 redirect to google.com which is already included
 53.     apple-dns.net ❌ Apple DNS
@@ -65,13 +65,13 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 55.     yahoo.com ❌ All found links redirect to consent.yahoo.com for cookie consent
 56.     skype.com ❌ 301 redirect to teams.live.com/free - No links that don't redirect to microsoft.com or Teams meeting functions
 57.     digicert.com ✅ Just picked 10 articles
-58.     cloudfront.net ❌ Amazon CDN  
-59.     tiktokcdn.com ❌ TikTok CDN  
+58.     cloudfront.net ❌ Amazon CDN
+59.     tiktokcdn.com ❌ TikTok CDN
 60.     msn.com ✅ Selected several articles and a few settings pages
 61.     whatsapp.com ❌ Already included (from whatsapp.net above), skipping
 62.     ntp.org ✅ All links found through navigation bar
 63.     goo.gl ❌ Redirects to Google blog announcing URL shortener discontinuation
-64.     aiv-cdn.net ❌ Amazon Prime CDN  
+64.     aiv-cdn.net ❌ Amazon Prime CDN
 65.     adobe.com ✅ Navigation bar for all links
 66.     workers.dev ✅ 301 redirect to https://workers.cloudflare.com/, multiple articles/pages available
 67.     vimeo.com ❌ 2/3 Mullvad servers triggered captcha on nearly every page access attempt
@@ -79,9 +79,9 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 69.     x.com ❌ Previously excluded (only 4 links found that weren't subdomains like about.x.com, help.x.com, ads.x.com, etc.)
 70.     gvt2.com ❌ Blocked by uBlock Origin due to spam/ads content
 71.     roblox.com ❌ Insufficient suitable links found (only 8-9), abandoned
-72.     msedge.net ❌ Microsoft CDN/edge  
+72.     msedge.net ❌ Microsoft CDN/edge
 73.     tiktok.com ✅ 10 suitable links found through documentation and similar pages, avoiding the video content sections
-74.     l-msedge.net ❌ Microsoft CDN/edge server  
+74.     l-msedge.net ❌ Microsoft CDN/edge server
 75.     cloudflare.net ❌ Different from cloudflare.com, frequent captcha challenges made it unsuitable
 76.     office365.com ❌ Redirects to Microsoft 365 page, microsoft.com already included
 77.     wac-msedge.net ❌ Microsoft CDN/edge server
@@ -89,8 +89,8 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 79.     bit.ly ✅ 301 redirect to https://bitly.com/, selected 10 links from navigation bar
 80.     zoom.us ✅ 301 redirect to https://www.zoom.com/, selected 10 links from navigation bar
 81.     intuit.com ✅ Selected links from navigation bar and footer
-82.     ytimg.com ❌ 404: YouTube image CDN  
-83.     qq.com ❌ All links redirect to other subdomains (news, open, h5.news, etc.), skipping  
+82.     ytimg.com ❌ 404: YouTube image CDN
+83.     qq.com ❌ All links redirect to other subdomains (news, open, h5.news, etc.), skipping
 84.     a2z.com ❌ Unreachable, appears to be Amazon-related service
 85.     gvt1.com ❌ Google service distribution host, unreachable
 86.     wordpress.com ✅ Different from wordpress.org apparently, TIL, Got all 10 links from navigation bar/footer
@@ -103,10 +103,10 @@ After gathering all 1000 URL:s, we randomize the order of each of the 10 URLs fo
 93.     googledomains.com ❌ 301 redirect to https://domains.google/ - Service discontinued after Squarespace acquisition
 94.     google-analytics.com ❌ Blocked by uBlock Origin; skipping
 95.     edgekey.net ❌ Akamai CDN
-96.     baidu.com ❌ Most clickable links redirect to subdomains, content language barrier  
+96.     baidu.com ❌ Most clickable links redirect to subdomains, content language barrier
 97.     googleadservices.com ❌ Blocked by uBlock Origin; skipping
 98.     ui.com ✅ Many similar animation-heavy links available, selected 10 
-99.     cdninstagram.com ❌ Instagram CDN  
+99.     cdninstagram.com ❌ Instagram CDN
 100.    nginx.org ✅ Selected introduction pages and documentation, primarily text-based content
 101.    windows.com ❌ 301 redirect to microsoft.com (already included)
 102.    reddit.com ❌ Completely blocks access when using Mullvad VPN (not always, but frequently enough)
