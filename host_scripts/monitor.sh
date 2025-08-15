@@ -13,7 +13,6 @@ read -p "[*] Enter the name of the VM you're using (which server script): " VM_N
 server_script="$root_dir/server/$VM_NAME/server.py"
 check_script="$script_dir/check.py"
 datadir="$root_dir/data"
-vpnlist="$root_dir/env/vpnlist.txt"
 log_file="$root_dir/collectionlog.txt"
 
 if [ ! -r "$server_script" ]; then
@@ -48,9 +47,9 @@ function run_check_and_restart {
     sleep 5
 
     # Prune bad files if any are found
-    if ! python3 "$check_script" --dir "$datadir" --vpnlist "$vpnlist" > /dev/null 2>&1; then
+    if ! python3 "$check_script" --dir "$datadir" > /dev/null 2>&1; then
         echo "!! Check script found bad files! Running again with --prune..." >> "$log_file"
-        python3 "$check_script" --prune --dir "$datadir" --vpnlist "$vpnlist" > /dev/null 2>&1
+        python3 "$check_script" --prune --dir "$datadir" > /dev/null 2>&1
         
     fi
 
