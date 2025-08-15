@@ -13,7 +13,6 @@ def get_server_directories(base_servers, data_dir):
     Auto-detect server directories by looking at which ones exists in the data directory
 
     Args:
-        base_servers: List of base server names from vpnlist
         data_dir: Path to data directory
 
     Returns:
@@ -71,7 +70,7 @@ def check(dir, prune):
             print(f"Error: {json_file} is missing in {dir}.")
             return
 
-    # iterate over each visit and check if both png and pcap are valid (size >= 200kb or size within 60-140% of average size)
+    # iterate over each visit and check if both png and pcap are valid (size within 60-140% of average size or within 50KiB-3MiB)
     for png in png_files:
         pcap = png.replace(".png", ".pcap")
         json = png.replace(".png", ".json")
@@ -103,10 +102,10 @@ def is_ok(
     pcap_size,
     avg_png_size,
     avg_pcap_size,
-    threshold=0.5,
+    threshold=0.6,
 ):
-    min_size = 1024 * 50  # 50 KiB minimum (besides avg)
-    max_allowed = 1024 * 3000  # 3 MiB maximum (besides avg)
+    min_size = 1024 * 50  # 50 KiB minimum (unless within avg)
+    max_allowed = 1024 * 3000  # 3 MiB maximum (unless within avg)
 
     def within_range(size, avg):
         return (avg * threshold <= size <= avg * (2 - threshold)) or (
@@ -122,19 +121,12 @@ def main(args):
     print(f"Checking dataset in {args.dir}...")
     print(f"Prune flag: {args.prune}")
 
-    # making sure we entered the right dir and vpnlist
-    if not os.path.exists(args.dir):
-        print(f"Error: The folder '{args.dir}' does not exist.")
+    # making sure the data directory exists
+    if not os.path.exists(args.dir) or not os.path.isdir(args.dir):
+        print(f"Error: '{args.dir}' does not exist or is not a directory.")
         return
 
-    if not os.path.exists(args.vpnlist):
-        print(f"Error: The file '{args.vpnlist}' does not exist.")
-        return
-
-    with open(args.vpnlist, "r") as file:
-        base_servers = [line.strip() for line in file if line.strip()]
-
-    server_dirs = get_server_directories(base_servers, args.dir)
+    server_dirs = get_server_directories(args.dir)
 
     # iterate over each server directory
     for server_dir in server_dirs:
@@ -154,10 +146,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check dataset.")
     parser.add_argument("--dir", type=str, required=True, help="root folder")
-    parser.add_argument(
-        "--vpnlist", type=str, required=True, help="path to vpnlist.txt"
-    )
-
     parser.add_argument("--prune", help="prune dataset", action="store_true")
 
     main(parser.parse_args())
