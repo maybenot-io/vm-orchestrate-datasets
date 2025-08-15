@@ -11,12 +11,22 @@ fi
 case "$1" in
     on)
         for VM in "${VMS[@]}"; do
+            state=$(sudo virsh domstate "$VM")
+            if [[ "$state" == "running" ]]; then
+                echo "$VM is already running. Skipping..."
+                continue
+            fi
             echo "Starting $VM..."
             sudo virsh start "$VM"
         done
         ;;
     off)
         for VM in "${VMS[@]}"; do
+            state=$(sudo virsh domstate "$VM")
+            if [[ "$state" == "shut off" ]]; then
+                echo "$VM is already shut down. Skipping..."
+                continue
+            fi
             echo "Shutting down $VM..."
             sudo virsh shutdown "$VM"
         done
