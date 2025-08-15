@@ -1,0 +1,24 @@
+{
+    "server": {
+        "datadir": "data/",
+        "urllist": "env/urllist.txt",
+        "vpnlist": "env/vpnlist.txt",
+        "database": "env/database.json",
+        "samples": 50,
+        "visits": 10,
+        "host": "192.168.100.1",
+        "port": 5000
+    },
+    "timing": {
+        "grace": 5,
+        "min_wait": 20,
+        "max_wait": 30,
+        "post_browser_pre_capture_wait": 5,
+        "post_packet_pre_visit_wait": 5
+    },
+    "client": {
+        "display_size": [1920, 1080],
+        "fullscreen": true,
+        "daita": "on"
+    }
+}
