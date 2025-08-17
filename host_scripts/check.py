@@ -8,38 +8,6 @@ import os
 i = 0
 
 
-def get_server_directories(base_servers, data_dir):
-    """
-    Auto-detect server directories by looking at which ones exists in the data directory
-
-    Args:
-        data_dir: Path to data directory
-
-    Returns:
-        List of expected directory names
-    """
-    print("Auto-detecting server directories from existing data...")
-
-    # Get all existing directories that match our server patterns
-    existing_dirs = [
-        d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))
-    ]
-
-    expected_dirs = []
-
-    for server in base_servers:
-        # Check if we have non-DAITA version
-        if server in existing_dirs:
-            expected_dirs.append(server)
-
-        # Check if we have DAITA version
-        daita_server = f"{server}_daita"
-        if daita_server in existing_dirs:
-            expected_dirs.append(daita_server)
-
-    return expected_dirs
-
-
 def check(dir, prune):
     global i
     files = os.listdir(dir)
@@ -126,11 +94,14 @@ def main(args):
         print(f"Error: '{args.dir}' does not exist or is not a directory.")
         return
 
-    server_dirs = get_server_directories(args.dir)
-
     # iterate over each server directory
-    for server_dir in server_dirs:
+    for server_dir in os.listdir(args.dir):
         server_path = os.path.join(args.dir, server_dir)
+
+        # skip if not a directory
+        if not os.path.isdir(server_path):
+            print(f"Skipping non-directory: {server_dir}")
+            continue
 
         # iterate over each url directory for current server
         for subdir in os.listdir(server_path):
