@@ -1,0 +1,27 @@
+{
+    "server": {
+        "datadir": "data/",
+        "urllist": "env/urllist.txt",
+        "vpnlist": "env/vpnlist.txt",
+        "database": "env/database.json",
+        "samples": 20,
+        "visits": 10,
+        "host": "192.168.100.1",
+        "port": 5000,
+        "MIN_PCAP_SIZE": 5,
+        "MAX_PCAP_SIZE": 20000,
+        "MIN_PNG_SIZE": 5
+    },
+    "timing": {
+        "grace": 0,
+        "min_wait": 20,
+        "max_wait": 20,
+        "post_packet_pre_visit_wait": 5,
+        "post_browser_pre_capture_wait": 5
+    },
+    "client": {
+        "display_size": [1920, 1080],
+        "fullscreen": true,
+        "daita": ["off"]
+    }
+}
