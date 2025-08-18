@@ -36,11 +36,27 @@ VPNLIST=$(realpath "$VPNLIST")
 DATADIR=$(realpath "$DATADIR")
 COLLECTION_LOG=$(realpath "$COLLECTION_LOG")
 
-# Set archive parameters
+# Prompt for custom root directory name
 BASE_NAME=$(basename "$URLLIST" .txt)
-ARCHIVE_NAME="${BASE_NAME}_${SAMPLE_SIZE}_samples.tar.gz"
-TAR_ROOT="${BASE_NAME}_${SAMPLE_SIZE}"
+DEFAULT_ROOT="${BASE_NAME}_${SAMPLE_SIZE}"
 
+echo "Default root directory name: $DEFAULT_ROOT"
+echo ""
+read -p "Enter custom root directory name (or press Enter for default): " CUSTOM_ROOT
+
+# Use custom name or default
+if [ -n "$CUSTOM_ROOT" ]; then
+    TAR_ROOT="$CUSTOM_ROOT"
+    echo "Using custom root directory: $TAR_ROOT"
+else
+    TAR_ROOT="$DEFAULT_ROOT"
+    echo "Using default root directory: $TAR_ROOT"
+fi
+
+# Set archive parameters
+ARCHIVE_NAME="${TAR_ROOT}.tar.gz"
+
+echo ""
 echo "Creating archive $ARCHIVE_NAME with:"
 echo "  URL list: $URLLIST"
 echo "  VPN list: $VPNLIST"
@@ -53,16 +69,28 @@ echo -e "\nCalculating total size..."
 TOTAL_SIZE=$(du -sb "$DATADIR" "$CONFIG_FILE" "$URLLIST" "$VPNLIST" "$COLLECTION_LOG" | awk '{sum += $1} END {print sum}')
 echo "Total data to compress: $(numfmt --to=iec $TOTAL_SIZE)"
 
-# Create archive with pv progress monitoring
-echo -e "\nCompressing data (this may take a while)..."
-tar -cf - \
-  --transform "s|^|$TAR_ROOT/|" \
-  -C "$(dirname "$CONFIG_FILE")" "$(basename "$CONFIG_FILE")" \
-  -C "$(dirname "$URLLIST")" "$(basename "$URLLIST")" \
-  -C "$(dirname "$VPNLIST")" "$(basename "$VPNLIST")" \
-  -C "$(dirname "$COLLECTION_LOG")" "$(basename "$COLLECTION_LOG")" \
-  -C "$(dirname "$DATADIR")" "$(basename "$DATADIR")" \
-  | pv -s "$TOTAL_SIZE" -N "Compression Progress" | gzip > "$ARCHIVE_NAME"
+# Create archive with parallel compression
+if command -v pigz >/dev/null 2>&1; then
+    echo -e "\nCompressing data with pigz using $(nproc) cores..."
+    tar -cf - \
+      --transform "s|^|$TAR_ROOT/|" \
+      -C "$(dirname "$CONFIG_FILE")" "$(basename "$CONFIG_FILE")" \
+      -C "$(dirname "$URLLIST")" "$(basename "$URLLIST")" \
+      -C "$(dirname "$VPNLIST")" "$(basename "$VPNLIST")" \
+      -C "$(dirname "$COLLECTION_LOG")" "$(basename "$COLLECTION_LOG")" \
+      -C "$(dirname "$DATADIR")" "$(basename "$DATADIR")" \
+      | pv -s "$TOTAL_SIZE" -N "Compression Progress" | pigz > "$ARCHIVE_NAME"
+else
+    echo -e "\nCompressing data with gzip (single-threaded)..."
+    tar -cf - \
+      --transform "s|^|$TAR_ROOT/|" \
+      -C "$(dirname "$CONFIG_FILE")" "$(basename "$CONFIG_FILE")" \
+      -C "$(dirname "$URLLIST")" "$(basename "$URLLIST")" \
+      -C "$(dirname "$VPNLIST")" "$(basename "$VPNLIST")" \
+      -C "$(dirname "$COLLECTION_LOG")" "$(basename "$COLLECTION_LOG")" \
+      -C "$(dirname "$DATADIR")" "$(basename "$DATADIR")" \
+      | pv -s "$TOTAL_SIZE" -N "Compression Progress" | gzip > "$ARCHIVE_NAME"
+fi
 
 # Verify archive integrity
 echo -e "\nVerifying archive..."
