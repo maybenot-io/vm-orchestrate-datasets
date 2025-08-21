@@ -345,12 +345,15 @@ class DataCollectionClient:
             # Use the config values automatically in wait
             self._wait_for_page_load(driver)
 
+            # Immediately after finishing wait, stop capture process then collect all data
+            pcap_data = self._end_pcap_capture()
             metrics = self._get_performance_metrics(driver)
             screenshot = self._capture_screenshot(driver)
-            return screenshot, metrics
+
+            return pcap_data, screenshot, metrics
         except Exception as e:
             print(f"Website visit error: {e}")
-            return None, None
+            return None, None, None
         finally:
             if driver and display:
                 driver.quit()
@@ -557,8 +560,7 @@ class DataCollectionClient:
         try:
             start_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
 
-            screenshot, metrics = self._visit_website(driver, display, task["url"])
-            pcap_data = self._end_pcap_capture()
+            pcap_data, screenshot, metrics = self._visit_website(driver, display, task["url"])
 
             end_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
         except Exception as e:
