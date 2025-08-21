@@ -22,7 +22,7 @@ late-commands:
     - curtin in-target -- chmod +x /usr/local/bin/first_boot.sh
     - curtin in-target -- systemctl enable bootstrap.service
 ```
-- The `first_boot.sh` script installs all necessary packages on first reboot, such as: Mullvad VPN, Mullvad Browser, GeckoDriver, tShark, Python-Selenium. See the script found in this directory for an exhaustive list.
+- The `first_boot.sh` script installs all necessary packages on first reboot, such as: Mullvad VPN, Mullvad Browser, GeckoDriver, tShark, Python-Selenium, Python-Selenium-Wire-2. See the first_boot.sh script found in this directory for an exhaustive list.
 - After all packages have been installed, this repository is cloned, and the corresponding client script within (./client/ubuntu_desktop/client.py) is set as executable.
 - An autostart login.desktop entry and script is created to make sure the client script it started on each reboot **AFTER the graphical environment is ready** (important for getting selenium to run a non-headless browser), and from there the collection can begin.
 
@@ -32,7 +32,7 @@ One PCAP/PNG/JSON file is saved of each website visit made:
 
 - The PCAP contains the encrypted website traffic data,
 - The PNG is used to verify the visit was valid (not blocked by CAPTHCHA or an offline website),
-- The JSON file contains captured metadata of the visit (QoE data, timestamp, visit sequence number).
+- The JSON file contains captured metadata of the visit (QoE data, timestamp, visit sequence number and .har data).
 
 ## Configuration file
 

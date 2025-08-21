@@ -105,7 +105,7 @@ Each client VM:
 ## Dependencies
 
 Host requires: qemu-kvm, libvirt-daemon-system, virtinst, python3-flask, python3-requests
-Client VMs require: Mullvad VPN, Mullvad Browser, selenium, tshark, PIL
+Client VMs require: Mullvad VPN, Mullvad Browser, selenium, tshark, PIL, selenium-wire-2
 Processing requires: scapy (for PCAP parsing), standard Python libraries
 
 The system is designed for Ubuntu 24.04 clients but the architecture supports other OS types through the modular server/client script organization.

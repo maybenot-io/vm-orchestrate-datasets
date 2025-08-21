@@ -96,7 +96,19 @@ if ! apt install python3-selenium python3-flask python3-psutil python3-requests 
     log "Error installing Python3 packages"
     exit 1
 fi
-log "Installed necessary Python3 packages"
+log "Installed necessary Python3 packages available in apt repositories"
+
+log "Installing pip and selenium-wire-2.."
+if ! sudo apt install python3-pip -y; then
+    log "Error installing pip"
+    exit 1
+fi
+
+if ! pip3 install --break-system-packages selenium-wire-2; then
+    log "Error installing selenium-wire-2"
+    exit 1
+fi
+log "Successfully installed pip and selenium-wire-2"
 
 log "Fetching the client script.."
 if ! git clone --quiet https://github.com/maybenot-io/vm-orchestrate-datasets /home/ubuntu/Documents/vm-orchestrate-datasets/; then

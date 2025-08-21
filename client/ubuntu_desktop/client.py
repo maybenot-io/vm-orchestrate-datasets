@@ -14,11 +14,10 @@ import requests
 from PIL import Image
 from pyvirtualdisplay import Display
 from selenium.common.exceptions import TimeoutException
-from selenium.webdriver import Firefox
-from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support.wait import WebDriverWait
+from seleniumwire2 import SeleniumWireOptions, webdriver
 
 
 def retry_with_backoff(
@@ -256,13 +255,20 @@ class DataCollectionClient:
     def _start_browser(self):
         """Launch Mullvad browser instance"""
         try:
+            # Configure options specific to selenium-wire-2
+            seleniumwire_options = SeleniumWireOptions(
+                enable_har=True,  # Enable .har generation
+                request_storage="memory",  # Store in memory only
+            )
             options = Options()
             options.binary_location = self.config.get("firefox_path")
-            profile = FirefoxProfile()
-            profile.set_preference("browser.cache.disk.enable", False)
-            profile.set_preference("privacy.clearOnShutdown.cache", True)
             service = Service(executable_path="/usr/local/bin/geckodriver")
-            return Firefox(options=options, service=service)
+            # Use selenium-wire-2 webdriver with ability to capture .har data
+            return webdriver.Firefox(
+                options=options,
+                service=service,
+                seleniumwire_options=seleniumwire_options,
+            )
         except Exception as e:
             print(f"Browser start error: {e}")
             return None
@@ -339,6 +345,29 @@ class DataCollectionClient:
         if sleep_needed > 0:
             time.sleep(sleep_needed)
 
+    def _get_har_data(self, driver):
+        """fetch HAR data saved through using selenium-wire-2"""
+        try:
+            # Get HAR data as JSON string and parse it
+            har_json_string = driver.har
+            har_data = json.loads(har_json_string)
+
+            # Remove the body of the requests/responses to reduce size of har data,
+            # since we are only interested in size, status and timing
+            if "log" in har_data and "entries" in har_data["log"]:
+                for entry in har_data["log"]["entries"]:
+                    if "request" in entry and "postData" in entry["request"]:
+                        if "text" in entry["request"]["postData"]:
+                            del entry["request"]["postData"]["text"]
+                    if "response" in entry and "content" in entry["response"]:
+                        if "text" in entry["response"]["content"]:
+                            del entry["response"]["content"]["text"]
+
+            return har_data
+        except Exception as e:
+            print(f"HAR capture error: {e}")
+            return None
+
     def _visit_website(self, driver, display, url):
         try:
             driver.get(url)
@@ -347,13 +376,13 @@ class DataCollectionClient:
 
             # Immediately after finishing wait, stop capture process then collect all data
             pcap_data = self._end_pcap_capture()
+            har_data = self._get_har_data(driver)
             metrics = self._get_performance_metrics(driver)
             screenshot = self._capture_screenshot(driver)
-
-            return pcap_data, screenshot, metrics
+            return pcap_data, screenshot, metrics, har_data
         except Exception as e:
             print(f"Website visit error: {e}")
-            return None, None, None
+            return None, None, None, None
         finally:
             if driver and display:
                 driver.quit()
@@ -453,7 +482,7 @@ class DataCollectionClient:
         jitter=0.3,
         exceptions=(requests.RequestException,),
     )
-    def _post_results(self, task, screenshot, pcap, metrics):
+    def _post_results(self, task, screenshot, pcap, metadata):
         """POST visit results to server"""
         data = {
             "id": self.config.get("identifier"),
@@ -462,7 +491,7 @@ class DataCollectionClient:
             "daita": self.state.get("daita", "off"),
             "png_data": screenshot.hex(),
             "pcap_data": pcap.hex(),
-            "metadata": json.dumps(metrics),
+            "metadata": json.dumps(metadata),
         }
         return self._server_request("work", method="POST", data=data) is not None
 
@@ -560,7 +589,9 @@ class DataCollectionClient:
         try:
             start_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
 
-            pcap_data, screenshot, metrics = self._visit_website(driver, display, task["url"])
+            pcap_data, screenshot, metrics, har_data = self._visit_website(
+                driver, display, task["url"]
+            )
 
             end_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
         except Exception as e:
@@ -572,16 +603,20 @@ class DataCollectionClient:
             # some network traffic in the VPN tunnel, essentially "using up" a visit
             self.state["current_visit_count"] += 1
 
-        # If metrics, screenshot or pcap failed to populate, skip this task
-        if not screenshot or not pcap_data or not metrics:
-            print(f"Failed to capture metrics, screenshot or pcap for {task['url']}")
+        # If metrics, screenshot, pcap, or har failed to populate, skip this task
+        if not screenshot or not pcap_data or not metrics or not har_data:
+            print(
+                f"Failed to capture metrics, screenshot, pcap, or har data for {task['url']}"
+            )
             return False
-        # Fetch metrics
-        if metrics:
-            metrics.update(
+        # Prepare metadata dictionary
+        metadata = {"perf": metrics or {}, "har": har_data or {}}
+        # Update metrics with visit count for current VPN-connection and start/end times
+        if metadata["perf"]:
+            metadata["perf"].update(
                 {
-                    "time_start": start_time,
-                    "time_end": end_time,
+                    "visit_time_start": start_time,
+                    "visit_time_end": end_time,
                     "vpn_tunnel_visits_since_connect": self.state.get(
                         "current_visit_count"
                     ),
@@ -589,7 +624,7 @@ class DataCollectionClient:
             )
 
         # POST results and return
-        return self._post_results(task, screenshot, pcap_data, metrics)
+        return self._post_results(task, screenshot, pcap_data, metadata)
 
     def run(self):
         """Main execution loop"""
