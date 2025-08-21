@@ -34,17 +34,20 @@ The architecture follows a distributed client-server model where VMs connect to 
 ```
 
 ### Data Collection Workflow
+
+Prepare the configuration files - `config.json`, `database.json`, `urllist.txt`, `vpnlist.txt`, then:
+
 ```bash
 # Start server in screen session (example for ubuntu_desktop)
 screen -S server
-python3 server/ubuntu_desktop/server.py --samples 1000 --datadir ./data --vpnlist ./env/vpnlist.txt --urllist ./env/urllist.txt --visits 10
+python3 server/ubuntu_desktop/server.py
 
 # Start monitoring in separate screen session
 screen -S monitor  
 ./host_scripts/monitor.sh
 
 # Check data quality and prune bad samples
-python3 host_scripts/check.py --dir ./data --vpnlist ./env/vpnlist.txt --prune
+python3 host_scripts/check.py --dir ./data --prune
 ```
 
 ### Data Processing and Analysis
@@ -59,7 +62,8 @@ python3 processing/raw2traces.py --dir ./data --results ./traces --classes 10 --
 ### Server API Endpoints
 - `GET /status` - Collection progress (collected/target counts)
 - `GET /setup?id=<client_id>` - Client registration and VPN account allocation
-- `GET /work?id=<client_id>` - Get next URL to visit
+- `GET /server?id=<client_id>&server=<current_server>&daita=<on|off>` - Get new VPN-server to use for visits
+- `GET /work?id=<client_id>&server=<current_server>&daita=<on|off>` - Get next URL to visit
 - `POST /work` - Submit collected data (PCAP, PNG, JSON files)
 
 ## Architecture Details
@@ -73,21 +77,25 @@ python3 processing/raw2traces.py --dir ./data --results ./traces --classes 10 --
 ### Data Collection Process
 Each client VM:
 1. Connects to Mullvad VPN using allocated account
-2. Requests URL assignments from server
-3. Visits URLs using Selenium/Firefox while capturing traffic with tshark
-4. Takes screenshots to verify successful page loads
-5. Uploads PCAP, PNG, and JSON metadata to server
+2. Requests VPN-server to use, configurable how many visits per connection
+3. Requests URL assignments for that specific VPN from server
+4. Visits URLs using Selenium/Firefox while capturing traffic with tshark
+5. Takes screenshots to verify successful page loads
+6. Uploads PCAP, PNG, and JSON metadata to server
 
 ### Monitoring and Quality Control
 - `monitor.sh` polls server status and triggers data validation
 - `check.py` identifies and removes outlier files based on size thresholds
-- Automatic server restart when bad data is detected
+- Automatic server restart when bad data is detected (triggered after reaching maximum samples)
 - Collection continues until all targets are met with valid data
 
 ## File Structure Notes
 
 - `docs/` contains VM configuration details and collection specifics
-- `env/` directory should contain `vpnlist.txt` and `urllist.txt` files
+- `env/` directory should contain `config.json`, `database.json`, `vpnlist.txt` and `urllist.txt` files
+  - `config.json` holds configuration data for the server and client, such as timing values
+  - `database.json` holds device configurations for VPN accounts generated using [Mullvads API](https://api.mullvad.net/accounts/v1/#operation/createDevice)
+  - `vpnlist.txt` and `urllist.txt` have a list of VPN-servers to use and URL:s to collect samples from, respectively
 - `data/` directory stores collected raw data (PCAP/PNG/JSON triplets)
 - `processing/` contains post-collection analysis tools:
   - `qoe.py` - Extracts QoE metrics from JSON metadata files
